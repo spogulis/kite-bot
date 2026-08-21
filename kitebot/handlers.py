@@ -242,19 +242,23 @@ def _dir_keyboard(spot: Spot) -> InlineKeyboardMarkup:
 # --- forecast ------------------------------------------------------------------
 
 async def _run_check(context: ContextTypes.DEFAULT_TYPE, chat_id: int, thread_id,
-                     spots: list, settings, all_spots: list) -> None:
+                     spots: list, settings, requested_by: "str | None" = None) -> None:
+    """Send a forecast digest. requested_by names the person whose button tap
+    triggered it (typed commands are attributed by the command message itself).
+    Results carry no buttons — fresh checks go via /prognoze or /menu."""
     try:
         await context.bot.send_chat_action(
             chat_id=chat_id, action=ChatAction.TYPING, message_thread_id=thread_id)
     except TelegramError:
         pass
     results = await gather_results(spots, settings)
-    parts = split_message(build_digest(results, settings))
-    for i, part in enumerate(parts):
+    text = build_digest(results, settings)
+    if requested_by:
+        text += f"\n\n👤 Pieprasīja: {html.escape(requested_by)}"
+    for part in split_message(text):
         await context.bot.send_message(
             chat_id=chat_id, text=part, parse_mode=ParseMode.HTML,
             message_thread_id=thread_id,
-            reply_markup=_menu_keyboard(all_spots) if i == len(parts) - 1 else None,
         )
 
 
@@ -293,7 +297,7 @@ async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await msg.reply_text("Neviens spots neatbilst. /spots parādīs sarakstu.")
             return
     thread_id = msg.message_thread_id if msg.is_topic_message else None
-    await _run_check(context, msg.chat_id, thread_id, spots, settings, all_spots)
+    await _run_check(context, msg.chat_id, thread_id, spots, settings)
 
 
 async def cmd_prognoze(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -307,7 +311,7 @@ async def cmd_prognoze(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await msg.reply_text("Vēl nav neviena spota.\n" + addspot_usage(settings))
         return
     thread_id = msg.message_thread_id if msg.is_topic_message else None
-    await _run_check(context, msg.chat_id, thread_id, spots, settings, spots)
+    await _run_check(context, msg.chat_id, thread_id, spots, settings)
 
 
 ROUTE_DAYS_LV = ["Šodien", "Rīt", "Parīt"]
@@ -919,7 +923,11 @@ async def _cb_check(query, context, settings, target: str) -> None:
     if m is None:
         return
     thread_id = m.message_thread_id if getattr(m, "is_topic_message", False) else None
-    await _run_check(context, m.chat.id, thread_id, selected, settings, spots)
+    requested_by = None
+    if m.chat.type != ChatType.PRIVATE and query.from_user is not None:
+        requested_by = query.from_user.full_name
+    await _run_check(context, m.chat.id, thread_id, selected, settings,
+                     requested_by=requested_by)
 
 
 async def _cb_manage_view(query, context, settings) -> None:
