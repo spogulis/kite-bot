@@ -87,7 +87,7 @@ Work the same in groups and in private chats.
 | Command | What it does |
 | --- | --- |
 | `/prognoze` | Forecast for all spots — a pure planning view |
-| `/marsruts` | Day-route planner: a button wizard (day → wind preference: stronger/lighter/any) that keeps editing one message, then becomes the route. In a DM you can also share your location so the plan accounts for the drive from you (and clips today's windows to your arrival); the DM result has a "📤 Nosūtīt grupai" button |
+| `/marsruts` | Day-route planner: a button wizard (day → wind preference: stronger/lighter/any → max total driving distance) that keeps editing one message, then becomes the route. In a DM you can also share your location so the plan accounts for the drive from you (and clips today's windows to your arrival); the DM result has a "📤 Nosūtīt grupai" button |
 | `/menu` (or `/start`) | Buttons: check all spots or a single one with one tap |
 | `/check [spot]` | Forecast check as a text command |
 | `/spots` | List configured spots and their settings |
