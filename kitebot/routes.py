@@ -12,7 +12,23 @@ from dataclasses import dataclass
 from datetime import timedelta
 from math import asin, cos, radians, sin, sqrt
 
+from .config import to_knots
 from .messages import WEEKDAYS_LV, direction_word, unit_label
+
+KITE_FACTOR = 2.2  # kite size m² ≈ 2.2 × rider kg / wind kn (twintip rule of thumb)
+
+
+def pick_kite(mean_speed: float, unit: str, weight_kg: "float | None",
+              quiver: "list | None") -> "float | None":
+    """The quiver size closest to the heuristic ideal for this wind, or None
+    when the profile is incomplete."""
+    if not weight_kg or not quiver:
+        return None
+    knots = to_knots(mean_speed, unit)
+    if knots < 1:
+        return None
+    ideal = KITE_FACTOR * weight_kg / knots
+    return min(quiver, key=lambda size: abs(size - ideal))
 
 ROAD_FACTOR = 1.3        # straight line -> road distance
 AVG_SPEED_KMH = 70.0
@@ -181,14 +197,17 @@ def _hours_lv(hours: float) -> str:
     return f"~{text} h ūdenī"
 
 
-def format_route(legs: list, total_hours: float, settings) -> str:
-    """Latvian HTML block for one day's route."""
+def format_route(legs: list, total_hours: float, settings,
+                 weight_kg: "float | None" = None, quiver: "list | None" = None) -> str:
+    """Latvian HTML block for one day's route; with a weight and quiver set,
+    each leg gets a kite pick and the header a packing list."""
     label = unit_label(settings.wind_unit)
     day = legs[0].start
     total_km = sum(leg.travel_km for leg in legs)
     drive = f" · 🚗 ~{round(total_km)} km" if total_km else ""
     lines = [f"🗺 <b>Maršruts</b> · {WEEKDAYS_LV[day.weekday()]} {day:%d.%m} · "
              f"{_hours_lv(total_hours)}{drive}"]
+    kites: list = []
     for i, leg in enumerate(legs):
         if leg.travel_min:
             origin_note = " no tevis" if i == 0 else ""
@@ -197,9 +216,18 @@ def format_route(legs: list, total_hours: float, settings) -> str:
         lo, hi = round(w.min_speed), round(w.max_speed)
         speed = f"{lo} {label}" if lo == hi else f"{lo}–{hi} {label}"
         emoji = LEG_EMOJI[i] if i < len(LEG_EMOJI) else f"{i + 1}."
+        kite = pick_kite((w.min_speed + w.max_speed) / 2, settings.wind_unit, weight_kg, quiver)
+        kite_txt = ""
+        if kite is not None:
+            kite_txt = f" · 🪁 {kite:g}"
+            if kite not in kites:
+                kites.append(kite)
         lines.append(f"{emoji} {leg.start:%H:%M}–{w.end:%H:%M} · "
                      f"{html.escape(leg.spot.name)} · {speed} (brāzmas {round(w.max_gust)}) · "
-                     f"{direction_word(w.direction)}")
+                     f"{direction_word(w.direction)}{kite_txt}")
+    if len(kites) > 1:
+        sizes = " + ".join(f"{k:g}" for k in sorted(kites, reverse=True))
+        lines.append(f"🪁 Ņem līdzi: {sizes}")
     return "\n".join(lines)
 
 
