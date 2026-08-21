@@ -346,6 +346,26 @@ def test_route_respects_total_drive_limit():
     assert len(legs) == 2
 
 
+def test_best_single_honours_origin_and_limit():
+    from kitebot.routes import best_single
+    w, a, b, far_c = _route_fixtures()
+    items = [(a, w(a, 10, 13)), (far_c, w(far_c, 10, 19))]  # far spot has more wind
+    origin = (57.00, 24.00)  # rider lives at Alfa
+
+    # without constraints: the windiest spot wins
+    name, hours, _, within = best_single(items)
+    assert name == "Cerija" and within
+
+    # with a 50 km limit: only Alfa is reachable, so Alfa it is
+    name, hours, drive, within = best_single(items, origin=origin, max_drive_km=50)
+    assert name == "Alfa" and within and drive < 5
+
+    # nothing rideable within the limit: nearest windy spot, flagged as outside
+    name, _, drive, within = best_single([(far_c, w(far_c, 10, 19))],
+                                         origin=origin, max_drive_km=50)
+    assert name == "Cerija" and not within and drive > 50
+
+
 def test_route_origin_reported_and_clips_today():
     from kitebot.routes import day_route
     w, a, b, _ = _route_fixtures()

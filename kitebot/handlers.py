@@ -354,13 +354,15 @@ async def _route_text(settings, offset: int, prefer: "str | None",
                                            depart_earliest=depart, max_drive_km=max_drive_km)
     if legs and total >= single + 0.5:
         return routes.format_route(legs, total, settings)
-    by_spot: dict = {}
-    for spot, w in items:
-        by_spot[spot.name] = by_spot.get(spot.name, 0.0) + w.hours
-    best_name, best_hours = max(by_spot.items(), key=lambda kv: kv[1])
+    name, best_hours, drive_km, within = routes.best_single(items, origin, max_drive_km)
     hours = f"{round(best_hours * 2) / 2:g}".replace(".", ",")
+    drive_txt = f", 🚗 ~{round(drive_km)} km no tevis" if drive_km is not None else ""
+    if not within:
+        return (f"🗺 {day_lv}: {round(max_drive_km)} km robežās no tevis braucama vēja "
+                f"nav. Tuvākais spots ar vēju: {html.escape(name)} "
+                f"(~{hours} h ūdenī{drive_txt}).")
     return (f"🗺 {day_lv}: braukāt apkārt neatmaksājas — labākais ir palikt "
-            f"spotā {html.escape(best_name)} (~{hours} h ūdenī).")
+            f"spotā {html.escape(name)} (~{hours} h ūdenī{drive_txt}).")
 
 
 async def _cb_route(query, context, settings, arg: str) -> None:
