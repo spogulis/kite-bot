@@ -54,6 +54,13 @@ def _day_lv(dt) -> str:
     return f"{WEEKDAYS_LV[dt.weekday()]} {dt:%d.%m}"
 
 
+def rain_note(rain_mm: float) -> str:
+    """' · 🌧 2,4 mm' when meaningful rain falls inside the window, else ''."""
+    if rain_mm < 0.2:
+        return ""
+    return " · 🌧 " + f"{rain_mm:.1f}".replace(".", ",") + " mm"
+
+
 def format_window(w: Window, label: str) -> str:
     if round(w.min_speed) == round(w.max_speed):
         speed = f"{_fmt(w.min_speed)} {label}"
@@ -62,6 +69,7 @@ def format_window(w: Window, label: str) -> str:
     return (
         f"✅ {_day_lv(w.start)} · {w.start:%H:%M}–{w.end:%H:%M} · "
         f"{speed} (brāzmas {_fmt(w.max_gust)}) · {direction_word(w.direction)}"
+        f"{rain_note(w.rain_mm)}"
     )
 
 

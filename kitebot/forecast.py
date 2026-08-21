@@ -38,7 +38,7 @@ async def fetch_hours(client: httpx.AsyncClient, spot, days: int, unit: str = "m
     params = {
         "latitude": spot.lat,
         "longitude": spot.lon,
-        "hourly": "wind_speed_10m,wind_gusts_10m,wind_direction_10m",
+        "hourly": "wind_speed_10m,wind_gusts_10m,wind_direction_10m,precipitation",
         "wind_speed_unit": unit,
         "timezone": "auto",
         "forecast_days": max(1, min(int(days), 7)),
@@ -68,11 +68,13 @@ async def fetch_hours(client: httpx.AsyncClient, spot, days: int, unit: str = "m
         tz = ZoneInfo(data["timezone"])
         hourly = data["hourly"]
         points = []
-        for stamp, speed, gust, direction in zip(
+        rain_values = hourly.get("precipitation") or [0] * len(hourly["time"])
+        for stamp, speed, gust, direction, rain in zip(
             hourly["time"],
             hourly["wind_speed_10m"],
             hourly["wind_gusts_10m"],
             hourly["wind_direction_10m"],
+            rain_values,
         ):
             if speed is None or direction is None:
                 continue
@@ -81,6 +83,7 @@ async def fetch_hours(client: httpx.AsyncClient, spot, days: int, unit: str = "m
                 speed=float(speed),
                 gusts=float(gust) if gust is not None else float(speed),
                 direction=float(direction),
+                rain=float(rain or 0),
             ))
         return points
     except (KeyError, ValueError) as exc:
@@ -122,11 +125,14 @@ async def fetch_hours_metno(client: httpx.AsyncClient, spot, days: int,
             if speed is None or direction is None:
                 continue
             gust = details.get("wind_speed_of_gust", speed)
+            rain = ((entry["data"].get("next_1_hours") or {})
+                    .get("details", {}).get("precipitation_amount", 0))
             points.append(HourPoint(
                 time=when,
                 speed=float(speed) * factor,
                 gusts=float(gust) * factor,
                 direction=float(direction),
+                rain=float(rain or 0),
             ))
         return points
     except (KeyError, ValueError) as exc:

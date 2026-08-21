@@ -366,6 +366,22 @@ def test_best_single_honours_origin_and_limit():
     assert name == "Cerija" and not within and drive > 50
 
 
+def test_window_rain_summed_and_shown():
+    from kitebot.analysis import HourPoint, find_windows
+    from kitebot.messages import format_window
+    points = [
+        HourPoint(datetime(2026, 8, 21, 10, tzinfo=TZ), 15, 20, 315, rain=1.2),
+        HourPoint(datetime(2026, 8, 21, 11, tzinfo=TZ), 15, 20, 315, rain=1.3),
+    ]
+    w = find_windows(points, spot(), min_hours=2, day_start=8, day_end=20)[0]
+    assert w.rain_mm == pytest.approx(2.5)
+    assert "🌧 2,5 mm" in format_window(w, "m/s")
+    # a dry window carries no rain note
+    dry = find_windows([HourPoint(p.time, 15, 20, 315) for p in points],
+                       spot(), min_hours=2, day_start=8, day_end=20)[0]
+    assert "🌧" not in format_window(dry, "m/s")
+
+
 def test_pick_kite_heuristic():
     from kitebot.routes import pick_kite
     quiver = [12, 9, 7]
