@@ -325,17 +325,28 @@ def test_route_infeasible_when_too_far():
     assert single == 4
 
 
-def test_route_sections_only_on_clear_gain():
-    from kitebot.config import Settings
-    from kitebot.messages import SpotResult
-    from kitebot.routes import route_sections
+def test_route_wind_preference_breaks_ties():
+    from kitebot.routes import day_route
     w, a, b, _ = _route_fixtures()
-    results = [SpotResult(spot=a, windows=[w(a, 10, 13)]),
-               SpotResult(spot=b, windows=[w(b, 15, 19)])]
-    section = route_sections(results, Settings())
-    assert section and "Maršruts" in section and "🚗" in section
-    # a lone spot never produces a route section
-    assert route_sections([SpotResult(spot=a, windows=[w(a, 10, 13)])], Settings()) is None
+    c = spot(name="Ceta", lat=57.36, lon=24.01)  # right next to Beta
+    items = [(a, w(a, 10, 13)), (b, w(b, 15, 19, speed=6.0)), (c, w(c, 15, 19, speed=12.0))]
+    strong, _, _ = day_route(items, prefer="strong")
+    light, _, _ = day_route(items, prefer="light")
+    assert [leg.spot.name for leg in strong] == ["Alfa", "Ceta"]
+    assert [leg.spot.name for leg in light] == ["Alfa", "Beta"]
+
+
+def test_route_origin_reported_and_clips_today():
+    from kitebot.routes import day_route
+    w, a, b, _ = _route_fixtures()
+    origin = (57.36, 24.00)  # rider lives next to Beta, ~40 km from Alfa
+    items = [(a, w(a, 10, 13)), (b, w(b, 15, 19))]
+    legs, _, _ = day_route(items, origin=origin)
+    assert legs[0].travel_km > 30  # drive from home to the first spot is shown
+    # planning for today, leaving at 10:00: Alfa's 10-13 window loses its start
+    depart = datetime(2026, 8, 22, 10, 0, tzinfo=TZ)
+    legs, _, _ = day_route(items, origin=origin, depart_earliest=depart)
+    assert legs[0].start > w(a, 10, 13).start
 
 
 def test_normalize_wind_unit():

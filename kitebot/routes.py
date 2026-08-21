@@ -17,7 +17,6 @@ from .messages import WEEKDAYS_LV, direction_word, unit_label
 ROAD_FACTOR = 1.3        # straight line -> road distance
 AVG_SPEED_KMH = 70.0
 MIN_LEG_HOURS = 1.0      # a leg shorter than this is not worth the drive
-DIGEST_GAIN_HOURS = 2.0  # the digest suggests a route only for this much extra water time
 MAX_WINDOWS = 14         # safety cap for the search
 
 LEG_EMOJI = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣"]
@@ -31,7 +30,11 @@ def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 
 def travel_between(spot_a, spot_b) -> tuple:
     """(minutes, km) by road estimate between two spots."""
-    km = haversine_km(spot_a.lat, spot_a.lon, spot_b.lat, spot_b.lon) * ROAD_FACTOR
+    return travel_from(spot_a.lat, spot_a.lon, spot_b)
+
+
+def travel_from(lat: float, lon: float, spot) -> tuple:
+    km = haversine_km(lat, lon, spot.lat, spot.lon) * ROAD_FACTOR
     return km / AVG_SPEED_KMH * 60.0, km
 
 
@@ -48,12 +51,32 @@ class Leg:
         return (self.window.end - self.start).total_seconds() / 3600
 
 
-def day_route(items: list) -> tuple:
+def _chain_score(path: list, total: float, prefer: "str | None") -> tuple:
+    """Primary: water time in half-hour buckets. Secondary: the wind
+    preference — among similar-length chains, 'strong' picks the windiest,
+    'light' the calmest (hour-weighted mean of window mid-speeds)."""
+    if total <= 0:
+        return (0, 0.0)
+    mean = sum(l.hours * (l.window.min_speed + l.window.max_speed) / 2 for l in path) / total
+    if prefer == "strong":
+        tie = mean
+    elif prefer == "light":
+        tie = -mean
+    else:
+        tie = 0.0
+    return (round(total * 2), tie)
+
+
+def day_route(items: list, prefer: "str | None" = None, origin: "tuple | None" = None,
+              depart_earliest=None) -> tuple:
     """items: [(spot, window)] within ONE local day.
 
-    Returns (legs, route_hours, best_single_spot_hours); legs is the
-    multi-spot chain with the most total water time, or [] when no chain
-    involving at least two spots is feasible.
+    origin: optional (lat, lon) the rider starts from — the drive to the first
+    spot is reported, and with depart_earliest set (planning for today) the
+    first leg cannot start before arrival. prefer: 'strong' | 'light' | None.
+
+    Returns (legs, route_hours, best_single_spot_hours); legs is the best
+    multi-spot chain, or [] when none involving two spots is feasible.
     """
     items = sorted(items, key=lambda sw: sw[1].start)
     if len(items) > MAX_WINDOWS:
@@ -67,11 +90,14 @@ def day_route(items: list) -> tuple:
 
     best_legs: list = []
     best_total = 0.0
+    best_score = (0, 0.0)
 
     def extend(path: list, used: set, total: float) -> None:
-        nonlocal best_legs, best_total
-        if len({leg.spot.name for leg in path}) >= 2 and total > best_total:
-            best_total, best_legs = total, list(path)
+        nonlocal best_legs, best_total, best_score
+        if len({leg.spot.name for leg in path}) >= 2:
+            score = _chain_score(path, total, prefer)
+            if score > best_score:
+                best_score, best_total, best_legs = score, total, list(path)
         last = path[-1]
         for idx, (spot, window) in enumerate(items):
             if idx in used or window.end <= last.window.end:
@@ -89,8 +115,16 @@ def day_route(items: list) -> tuple:
             extend(path + [leg], used | {idx}, total + leg.hours)
 
     for idx, (spot, window) in enumerate(items):
-        first = Leg(spot=spot, window=window, start=window.start,
-                    travel_min=0.0, travel_km=0.0)
+        travel_min = travel_km = 0.0
+        start = window.start
+        if origin is not None:
+            travel_min, travel_km = travel_from(origin[0], origin[1], spot)
+            if depart_earliest is not None:
+                start = max(start, depart_earliest + timedelta(minutes=travel_min))
+                if (window.end - start).total_seconds() / 3600 < MIN_LEG_HOURS:
+                    continue
+        first = Leg(spot=spot, window=window, start=start,
+                    travel_min=travel_min, travel_km=travel_km)
         extend([first], {idx}, first.hours)
 
     return best_legs, best_total, best_single
@@ -120,7 +154,8 @@ def format_route(legs: list, total_hours: float, settings) -> str:
              f"{_hours_lv(total_hours)}"]
     for i, leg in enumerate(legs):
         if leg.travel_min:
-            lines.append(f"🚗 ~{_duration_lv(leg.travel_min)} ({round(leg.travel_km)} km)")
+            origin_note = " no tevis" if i == 0 else ""
+            lines.append(f"🚗{origin_note} ~{_duration_lv(leg.travel_min)} ({round(leg.travel_km)} km)")
         w = leg.window
         lo, hi = round(w.min_speed), round(w.max_speed)
         speed = f"{lo} {label}" if lo == hi else f"{lo}–{hi} {label}"
@@ -130,19 +165,3 @@ def format_route(legs: list, total_hours: float, settings) -> str:
     return "\n".join(lines)
 
 
-def route_sections(results: list, settings, min_gain: float = DIGEST_GAIN_HOURS,
-                   max_days: int = 2) -> "str | None":
-    """Route blocks for the digest: only days where a multi-spot chain beats
-    the best single spot by at least `min_gain` hours."""
-    windows_by_day: dict = {}
-    for result in results:
-        for window in result.windows:
-            windows_by_day.setdefault(window.start.date(), []).append((result.spot, window))
-    sections = []
-    for day in sorted(windows_by_day):
-        legs, total, single = day_route(windows_by_day[day])
-        if legs and total >= single + min_gain:
-            sections.append(format_route(legs, total, settings))
-        if len(sections) >= max_days:
-            break
-    return "\n\n".join(sections) if sections else None

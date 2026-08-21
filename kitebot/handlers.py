@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import html
 import logging
+import secrets
 import shlex
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -304,6 +305,12 @@ async def cmd_prognoze(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 ROUTE_DAYS_LV = ["Šodien", "Rīt", "Parīt"]
+ROUTE_PREFS_LV = {"s": "stiprāku vēju", "l": "vieglāku vēju", "a": "jebkādu vēju"}
+
+# (chat_id, user_id) -> pending route waiting for the user's shared location
+_pending_route: dict = {}
+# share tokens for the "📤 Nosūtīt grupai" button on DM route results
+_route_share: dict = {}
 
 
 async def cmd_marsruts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -323,39 +330,159 @@ async def cmd_marsruts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await msg.reply_text("🗺 Kurai dienai plānot maršrutu?", reply_markup=keyboard)
 
 
+async def _route_text(settings, offset: int, prefer: "str | None",
+                      origin: "tuple | None" = None) -> str:
+    spots = config.load_spots(settings)
+    results = await gather_results(spots, settings)
+    tz = ZoneInfo(settings.timezone)
+    now = datetime.now(tz)
+    target = (now + timedelta(days=offset)).date()
+    day_lv = ROUTE_DAYS_LV[offset] if offset < len(ROUTE_DAYS_LV) else target.isoformat()
+    items = [(r.spot, w) for r in results for w in r.windows if w.start.date() == target]
+    if not items:
+        return f"🗺 {day_lv}: nevienā spotā nav braucama vēja — maršrutu nesanāk."
+    depart = now if (offset == 0 and origin is not None) else None
+    legs, total, single = routes.day_route(items, prefer=prefer, origin=origin,
+                                           depart_earliest=depart)
+    if legs and total >= single + 0.5:
+        return routes.format_route(legs, total, settings)
+    by_spot: dict = {}
+    for spot, w in items:
+        by_spot[spot.name] = by_spot.get(spot.name, 0.0) + w.hours
+    best_name, best_hours = max(by_spot.items(), key=lambda kv: kv[1])
+    hours = f"{round(best_hours * 2) / 2:g}".replace(".", ",")
+    return (f"🗺 {day_lv}: braukāt apkārt neatmaksājas — labākais ir palikt "
+            f"spotā {html.escape(best_name)} (~{hours} h ūdenī).")
+
+
 async def _cb_route(query, context, settings, arg: str) -> None:
+    """Step 1 → 2: the day is picked, ask for the wind preference by editing
+    the same message (one message total in the chat)."""
     try:
         offset = max(0, min(int(arg), settings.forecast_days - 1))
     except ValueError:
         await query.answer()
         return
-    await query.answer("Plānoju maršrutu…")
+    await query.answer()
+    day_lv = ROUTE_DAYS_LV[offset] if offset < len(ROUTE_DAYS_LV) else str(offset)
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("💨 Stiprāku", callback_data=f"routew:{offset}:s"),
+        InlineKeyboardButton("🍃 Vieglāku", callback_data=f"routew:{offset}:l"),
+        InlineKeyboardButton("🤷 Vienalga", callback_data=f"routew:{offset}:a"),
+    ]])
+    try:
+        await query.edit_message_text(f"🗺 {day_lv} — kādu vēju gribi?", reply_markup=keyboard)
+    except BadRequest:
+        pass
+
+
+async def _cb_route_wind(query, context, settings, payload: str) -> None:
+    """Step 2 → result (groups) or step 3 (DM: optional location)."""
+    day_arg, _, pref_key = payload.partition(":")
+    try:
+        offset = max(0, min(int(day_arg), settings.forecast_days - 1))
+    except ValueError:
+        await query.answer()
+        return
     m = query.message
     if m is None:
+        await query.answer()
         return
-    thread_id = m.message_thread_id if getattr(m, "is_topic_message", False) else None
-    spots = config.load_spots(settings)
-    results = await gather_results(spots, settings)
-    tz = ZoneInfo(settings.timezone)
-    target = (datetime.now(tz) + timedelta(days=offset)).date()
-    day_lv = ROUTE_DAYS_LV[offset] if offset < len(ROUTE_DAYS_LV) else target.isoformat()
-    items = [(r.spot, w) for r in results for w in r.windows if w.start.date() == target]
-    if not items:
-        text = f"🗺 {day_lv}: nevienā spotā nav braucama vēja — maršrutu nesanāk."
-    else:
-        legs, total, single = routes.day_route(items)
-        if legs and total >= single + 0.5:
-            text = routes.format_route(legs, total, settings)
-        else:
-            by_spot: dict = {}
-            for spot, w in items:
-                by_spot[spot.name] = by_spot.get(spot.name, 0.0) + w.hours
-            best_name, best_hours = max(by_spot.items(), key=lambda kv: kv[1])
-            hours = f"{round(best_hours * 2) / 2:g}".replace(".", ",")
-            text = (f"🗺 {day_lv}: braukāt apkārt neatmaksājas — labākais ir palikt "
-                    f"spotā {html.escape(best_name)} (~{hours} h ūdenī).")
-    await context.bot.send_message(chat_id=m.chat.id, text=text,
-                                   parse_mode=ParseMode.HTML, message_thread_id=thread_id)
+    prefer = {"s": "strong", "l": "light"}.get(pref_key)
+    if m.chat.type == ChatType.PRIVATE:
+        # DM: offer to include the rider's location before computing
+        await query.answer()
+        user = query.from_user
+        if user is not None:
+            _pending_route[(m.chat.id, user.id)] = {
+                "offset": offset, "prefer": prefer,
+                "expires": datetime.now(timezone.utc) + LOCATION_WAIT,
+            }
+        day_lv = ROUTE_DAYS_LV[offset] if offset < len(ROUTE_DAYS_LV) else str(offset)
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("⏭️ Bez atrašanās vietas",
+                                 callback_data=f"routego:{offset}:{pref_key}"),
+        ]])
+        try:
+            await query.edit_message_text(
+                f"🗺 {day_lv}, {ROUTE_PREFS_LV.get(pref_key, '')} — atsūti savu atrašanās "
+                "vietu (📎 → Location), lai ņemtu vērā braucienu no tevis, vai spied ⏭️.",
+                reply_markup=keyboard)
+        except BadRequest:
+            pass
+        return
+    # group: compute right away, the config message becomes the result
+    await query.answer("Plānoju maršrutu…")
+    try:
+        await query.edit_message_text("⏳ Plānoju maršrutu…")
+    except BadRequest:
+        pass
+    text = await _route_text(settings, offset, prefer)
+    try:
+        await query.edit_message_text(text, parse_mode=ParseMode.HTML)
+    except BadRequest:
+        pass
+
+
+async def _cb_route_go(query, context, settings, payload: str) -> None:
+    """DM step 3 without a location."""
+    day_arg, _, pref_key = payload.partition(":")
+    try:
+        offset = max(0, min(int(day_arg), settings.forecast_days - 1))
+    except ValueError:
+        await query.answer()
+        return
+    m = query.message
+    user = query.from_user
+    if m is not None and user is not None:
+        _pending_route.pop((m.chat.id, user.id), None)
+    await query.answer("Plānoju maršrutu…")
+    if m is None:
+        return
+    try:
+        await query.edit_message_text("⏳ Plānoju maršrutu…")
+    except BadRequest:
+        pass
+    prefer = {"s": "strong", "l": "light"}.get(pref_key)
+    text = await _route_text(settings, offset, prefer)
+    try:
+        await query.edit_message_text(text, parse_mode=ParseMode.HTML,
+                                      reply_markup=_route_share_keyboard(text))
+    except BadRequest:
+        pass
+
+
+def _route_share_keyboard(text: str) -> "InlineKeyboardMarkup | None":
+    """A 'send to group' button for DM results, when a group is subscribed."""
+    if not any(s.chat_id < 0 for s in config.load_subscriptions()):
+        return None
+    token = secrets.token_hex(4)
+    _route_share[token] = text
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("📤 Nosūtīt grupai", callback_data=f"rshare:{token}"),
+    ]])
+
+
+async def _cb_route_share(query, context, settings, token: str) -> None:
+    text = _route_share.get(token)
+    if text is None:
+        await query.answer("Šis maršruts vairs nav pieejams — uztaisi jaunu.", show_alert=True)
+        return
+    user = query.from_user
+    group_ids = {s.chat_id for s in config.load_subscriptions() if s.chat_id < 0}
+    sent = 0
+    for chat_id in group_ids:
+        try:
+            member = await context.bot.get_chat_member(chat_id, user.id) if user else None
+            if member is None or member.status in ("left", "kicked"):
+                continue
+            await context.bot.send_message(chat_id=chat_id, text=text,
+                                           parse_mode=ParseMode.HTML)
+            sent += 1
+        except TelegramError as exc:
+            log.warning("route share to %s failed: %s", chat_id, exc)
+    await query.answer("Nosūtīts grupai." if sent else "Neizdevās nosūtīt nevienai grupai.",
+                       show_alert=not sent)
 
 
 async def cmd_spots(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -516,6 +643,18 @@ async def on_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     user = update.effective_user
     if msg is None or msg.location is None or user is None:
         return
+    route_pending = _pending_route.pop((msg.chat_id, user.id), None)
+    if route_pending is not None:
+        if datetime.now(timezone.utc) > route_pending["expires"]:
+            await msg.reply_text("Laiks pagājis — sāc vēlreiz ar /marsruts.")
+            return
+        settings = config.load_settings()
+        origin = (msg.location.latitude, msg.location.longitude)
+        text = await _route_text(settings, route_pending["offset"],
+                                 route_pending["prefer"], origin=origin)
+        keyboard = _route_share_keyboard(text) if msg.chat.type == ChatType.PRIVATE else None
+        await msg.reply_html(text, reply_markup=keyboard)
+        return
     pending = _pending_locations.get((msg.chat_id, user.id))
     if pending is None:
         return
@@ -622,6 +761,12 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await _cb_riders_view(query, context, settings)
     elif data.startswith("route:"):
         await _cb_route(query, context, settings, data[len("route:"):])
+    elif data.startswith("routew:"):
+        await _cb_route_wind(query, context, settings, data[len("routew:"):])
+    elif data.startswith("routego:"):
+        await _cb_route_go(query, context, settings, data[len("routego:"):])
+    elif data.startswith("rshare:"):
+        await _cb_route_share(query, context, settings, data[len("rshare:"):])
     else:
         await query.answer()
 
@@ -1282,7 +1427,6 @@ async def cmd_testdigest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         pass
     results = await gather_results(spots, settings)
     woo_section, woo_status = await build_woo_section(settings, update_records=False)
-    route_section = routes.route_sections(results, settings)  # before any chat filter
     sub = config.find_subscription(msg.chat_id, thread_id)
     if sub is not None:
         results = _filter_results(results, sub)
@@ -1298,8 +1442,7 @@ async def cmd_testdigest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if sub is not None and sub.spots:
         outro += f"\nŠī čata spotu filtrs: {', '.join(sub.spots)}."
     outro += f"\nWOO: {woo_status}."
-    extra = "\n\n".join(part for part in (route_section, woo_section) if part) or None
-    text = intro + "\n\n" + _daily_text(results, settings, extra=extra) + "\n\n" + outro
+    text = intro + "\n\n" + _daily_text(results, settings, extra=woo_section) + "\n\n" + outro
     for part in split_message(text):
         await msg.reply_html(part)
 
@@ -1316,8 +1459,6 @@ async def daily_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     results = await gather_results(spots, settings, robust=True)
     woo_section, _ = await build_woo_section(settings, update_records=True)
-    route_section = routes.route_sections(results, settings)  # computed on all spots
-    extra = "\n\n".join(part for part in (route_section, woo_section) if part) or None
     keyboard = _menu_keyboard(spots)
     cache: dict = {}
     for sub in subs:
@@ -1327,7 +1468,7 @@ async def daily_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             continue
         key = tuple(sorted(n.lower() for n in sub.spots))
         if key not in cache:
-            cache[key] = split_message(_daily_text(filtered, settings, extra=extra))
+            cache[key] = split_message(_daily_text(filtered, settings, extra=woo_section))
         await _send_digest(context, sub, cache[key], keyboard)
 
 
