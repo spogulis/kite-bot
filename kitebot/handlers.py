@@ -330,8 +330,16 @@ async def cmd_marsruts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await msg.reply_text("🗺 Kurai dienai plānot maršrutu?", reply_markup=keyboard)
 
 
+ROUTE_DISTS = [("50", "≤50 km"), ("100", "≤100 km"), ("200", "≤200 km"), ("0", "♾️ Vienalga")]
+
+
+def _dist_label(code: str) -> str:
+    return dict(ROUTE_DISTS).get(code, "♾️").replace("♾️ Vienalga", "bez limita")
+
+
 async def _route_text(settings, offset: int, prefer: "str | None",
-                      origin: "tuple | None" = None) -> str:
+                      origin: "tuple | None" = None,
+                      max_drive_km: "float | None" = None) -> str:
     spots = config.load_spots(settings)
     results = await gather_results(spots, settings)
     tz = ZoneInfo(settings.timezone)
@@ -343,7 +351,7 @@ async def _route_text(settings, offset: int, prefer: "str | None",
         return f"🗺 {day_lv}: nevienā spotā nav braucama vēja — maršrutu nesanāk."
     depart = now if (offset == 0 and origin is not None) else None
     legs, total, single = routes.day_route(items, prefer=prefer, origin=origin,
-                                           depart_earliest=depart)
+                                           depart_earliest=depart, max_drive_km=max_drive_km)
     if legs and total >= single + 0.5:
         return routes.format_route(legs, total, settings)
     by_spot: dict = {}
@@ -377,36 +385,74 @@ async def _cb_route(query, context, settings, arg: str) -> None:
 
 
 async def _cb_route_wind(query, context, settings, payload: str) -> None:
-    """Step 2 → result (groups) or step 3 (DM: optional location)."""
+    """Step 2 → 3: wind picked, ask how far the rider is willing to drive."""
     day_arg, _, pref_key = payload.partition(":")
     try:
         offset = max(0, min(int(day_arg), settings.forecast_days - 1))
     except ValueError:
         await query.answer()
         return
+    await query.answer()
+    day_lv = ROUTE_DAYS_LV[offset] if offset < len(ROUTE_DAYS_LV) else str(offset)
+    rows = []
+    row = []
+    for code, label in ROUTE_DISTS:
+        row.append(InlineKeyboardButton(label, callback_data=f"routed:{offset}:{pref_key}:{code}"))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    try:
+        await query.edit_message_text(
+            f"🗺 {day_lv}, {ROUTE_PREFS_LV.get(pref_key, '')} — cik tālu kopā esi gatavs braukt?",
+            reply_markup=InlineKeyboardMarkup(rows))
+    except BadRequest:
+        pass
+
+
+def _parse_route_args(payload: str, settings) -> "tuple | None":
+    parts = payload.split(":")
+    try:
+        offset = max(0, min(int(parts[0]), settings.forecast_days - 1))
+    except (ValueError, IndexError):
+        return None
+    pref_key = parts[1] if len(parts) > 1 else "a"
+    dist_code = parts[2] if len(parts) > 2 else "0"
+    prefer = {"s": "strong", "l": "light"}.get(pref_key)
+    max_drive = float(dist_code) if dist_code.isdigit() and dist_code != "0" else None
+    return offset, pref_key, prefer, dist_code, max_drive
+
+
+async def _cb_route_dist(query, context, settings, payload: str) -> None:
+    """Step 3 → result (groups) or step 4 (DM: optional location)."""
+    parsed = _parse_route_args(payload, settings)
+    if parsed is None:
+        await query.answer()
+        return
+    offset, pref_key, prefer, dist_code, max_drive = parsed
     m = query.message
     if m is None:
         await query.answer()
         return
-    prefer = {"s": "strong", "l": "light"}.get(pref_key)
     if m.chat.type == ChatType.PRIVATE:
-        # DM: offer to include the rider's location before computing
         await query.answer()
         user = query.from_user
         if user is not None:
             _pending_route[(m.chat.id, user.id)] = {
-                "offset": offset, "prefer": prefer,
+                "offset": offset, "prefer": prefer, "max_drive": max_drive,
                 "expires": datetime.now(timezone.utc) + LOCATION_WAIT,
             }
         day_lv = ROUTE_DAYS_LV[offset] if offset < len(ROUTE_DAYS_LV) else str(offset)
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton("⏭️ Bez atrašanās vietas",
-                                 callback_data=f"routego:{offset}:{pref_key}"),
+                                 callback_data=f"routego:{offset}:{pref_key}:{dist_code}"),
         ]])
         try:
             await query.edit_message_text(
-                f"🗺 {day_lv}, {ROUTE_PREFS_LV.get(pref_key, '')} — atsūti savu atrašanās "
-                "vietu (📎 → Location), lai ņemtu vērā braucienu no tevis, vai spied ⏭️.",
+                f"🗺 {day_lv}, {ROUTE_PREFS_LV.get(pref_key, '')}, {_dist_label(dist_code)} — "
+                "atsūti savu atrašanās vietu (📎 → Location), lai ņemtu vērā braucienu "
+                "no tevis, vai spied ⏭️.",
                 reply_markup=keyboard)
         except BadRequest:
             pass
@@ -417,7 +463,7 @@ async def _cb_route_wind(query, context, settings, payload: str) -> None:
         await query.edit_message_text("⏳ Plānoju maršrutu…")
     except BadRequest:
         pass
-    text = await _route_text(settings, offset, prefer)
+    text = await _route_text(settings, offset, prefer, max_drive_km=max_drive)
     try:
         await query.edit_message_text(text, parse_mode=ParseMode.HTML)
     except BadRequest:
@@ -425,13 +471,12 @@ async def _cb_route_wind(query, context, settings, payload: str) -> None:
 
 
 async def _cb_route_go(query, context, settings, payload: str) -> None:
-    """DM step 3 without a location."""
-    day_arg, _, pref_key = payload.partition(":")
-    try:
-        offset = max(0, min(int(day_arg), settings.forecast_days - 1))
-    except ValueError:
+    """DM final step without a location."""
+    parsed = _parse_route_args(payload, settings)
+    if parsed is None:
         await query.answer()
         return
+    offset, _, prefer, _, max_drive = parsed
     m = query.message
     user = query.from_user
     if m is not None and user is not None:
@@ -443,8 +488,7 @@ async def _cb_route_go(query, context, settings, payload: str) -> None:
         await query.edit_message_text("⏳ Plānoju maršrutu…")
     except BadRequest:
         pass
-    prefer = {"s": "strong", "l": "light"}.get(pref_key)
-    text = await _route_text(settings, offset, prefer)
+    text = await _route_text(settings, offset, prefer, max_drive_km=max_drive)
     try:
         await query.edit_message_text(text, parse_mode=ParseMode.HTML,
                                       reply_markup=_route_share_keyboard(text))
@@ -651,7 +695,8 @@ async def on_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         settings = config.load_settings()
         origin = (msg.location.latitude, msg.location.longitude)
         text = await _route_text(settings, route_pending["offset"],
-                                 route_pending["prefer"], origin=origin)
+                                 route_pending["prefer"], origin=origin,
+                                 max_drive_km=route_pending.get("max_drive"))
         keyboard = _route_share_keyboard(text) if msg.chat.type == ChatType.PRIVATE else None
         await msg.reply_html(text, reply_markup=keyboard)
         return
@@ -763,6 +808,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await _cb_route(query, context, settings, data[len("route:"):])
     elif data.startswith("routew:"):
         await _cb_route_wind(query, context, settings, data[len("routew:"):])
+    elif data.startswith("routed:"):
+        await _cb_route_dist(query, context, settings, data[len("routed:"):])
     elif data.startswith("routego:"):
         await _cb_route_go(query, context, settings, data[len("routego:"):])
     elif data.startswith("rshare:"):

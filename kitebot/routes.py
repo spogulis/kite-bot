@@ -68,12 +68,13 @@ def _chain_score(path: list, total: float, prefer: "str | None") -> tuple:
 
 
 def day_route(items: list, prefer: "str | None" = None, origin: "tuple | None" = None,
-              depart_earliest=None) -> tuple:
+              depart_earliest=None, max_drive_km: "float | None" = None) -> tuple:
     """items: [(spot, window)] within ONE local day.
 
     origin: optional (lat, lon) the rider starts from — the drive to the first
     spot is reported, and with depart_earliest set (planning for today) the
     first leg cannot start before arrival. prefer: 'strong' | 'light' | None.
+    max_drive_km caps the TOTAL day's driving (including from origin).
 
     Returns (legs, route_hours, best_single_spot_hours); legs is the best
     multi-spot chain, or [] when none involving two spots is feasible.
@@ -92,7 +93,7 @@ def day_route(items: list, prefer: "str | None" = None, origin: "tuple | None" =
     best_total = 0.0
     best_score = (0, 0.0)
 
-    def extend(path: list, used: set, total: float) -> None:
+    def extend(path: list, used: set, total: float, driven_km: float) -> None:
         nonlocal best_legs, best_total, best_score
         if len({leg.spot.name for leg in path}) >= 2:
             score = _chain_score(path, total, prefer)
@@ -106,26 +107,30 @@ def day_route(items: list, prefer: "str | None" = None, origin: "tuple | None" =
                 travel_min, travel_km = 0.0, 0.0
             else:
                 travel_min, travel_km = travel_between(last.spot, spot)
+            if max_drive_km is not None and driven_km + travel_km > max_drive_km:
+                continue
             arrive = last.window.end + timedelta(minutes=travel_min)
             start = max(window.start, arrive)
             if (window.end - start).total_seconds() / 3600 < MIN_LEG_HOURS:
                 continue
             leg = Leg(spot=spot, window=window, start=start,
                       travel_min=travel_min, travel_km=travel_km)
-            extend(path + [leg], used | {idx}, total + leg.hours)
+            extend(path + [leg], used | {idx}, total + leg.hours, driven_km + travel_km)
 
     for idx, (spot, window) in enumerate(items):
         travel_min = travel_km = 0.0
         start = window.start
         if origin is not None:
             travel_min, travel_km = travel_from(origin[0], origin[1], spot)
+            if max_drive_km is not None and travel_km > max_drive_km:
+                continue
             if depart_earliest is not None:
                 start = max(start, depart_earliest + timedelta(minutes=travel_min))
                 if (window.end - start).total_seconds() / 3600 < MIN_LEG_HOURS:
                     continue
         first = Leg(spot=spot, window=window, start=start,
                     travel_min=travel_min, travel_km=travel_km)
-        extend([first], {idx}, first.hours)
+        extend([first], {idx}, first.hours, travel_km)
 
     return best_legs, best_total, best_single
 
@@ -150,8 +155,10 @@ def format_route(legs: list, total_hours: float, settings) -> str:
     """Latvian HTML block for one day's route."""
     label = unit_label(settings.wind_unit)
     day = legs[0].start
+    total_km = sum(leg.travel_km for leg in legs)
+    drive = f" · 🚗 ~{round(total_km)} km" if total_km else ""
     lines = [f"🗺 <b>Maršruts</b> · {WEEKDAYS_LV[day.weekday()]} {day:%d.%m} · "
-             f"{_hours_lv(total_hours)}"]
+             f"{_hours_lv(total_hours)}{drive}"]
     for i, leg in enumerate(legs):
         if leg.travel_min:
             origin_note = " no tevis" if i == 0 else ""

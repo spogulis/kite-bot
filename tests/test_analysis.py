@@ -336,6 +336,16 @@ def test_route_wind_preference_breaks_ties():
     assert [leg.spot.name for leg in light] == ["Alfa", "Beta"]
 
 
+def test_route_respects_total_drive_limit():
+    from kitebot.routes import day_route
+    w, a, b, _ = _route_fixtures()
+    items = [(a, w(a, 10, 13)), (b, w(b, 15, 19))]  # ~52 road-km apart
+    legs, _, _ = day_route(items, max_drive_km=30)
+    assert legs == []
+    legs, _, _ = day_route(items, max_drive_km=100)
+    assert len(legs) == 2
+
+
 def test_route_origin_reported_and_clips_today():
     from kitebot.routes import day_route
     w, a, b, _ = _route_fixtures()
