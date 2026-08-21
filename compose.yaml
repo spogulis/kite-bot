@@ -1,0 +1,8 @@
+services:
+  kitebot:
+    build: .
+    env_file: .env
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./data:/app/data
+    restart: unless-stopped
