@@ -198,7 +198,8 @@ def format_route(legs: list, total_hours: float, settings) -> str:
         speed = f"{lo} {label}" if lo == hi else f"{lo}–{hi} {label}"
         emoji = LEG_EMOJI[i] if i < len(LEG_EMOJI) else f"{i + 1}."
         lines.append(f"{emoji} {leg.start:%H:%M}–{w.end:%H:%M} · "
-                     f"{html.escape(leg.spot.name)} · {speed} · {direction_word(w.direction)}")
+                     f"{html.escape(leg.spot.name)} · {speed} (brāzmas {round(w.max_gust)}) · "
+                     f"{direction_word(w.direction)}")
     return "\n".join(lines)
 
 
