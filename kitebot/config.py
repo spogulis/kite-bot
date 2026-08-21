@@ -171,6 +171,7 @@ class Settings:
     woo_token: str = ""  # empty = use the built-in anonymous leaderboard token
     surfr_token: str = ""  # empty = use the built-in public leaderboard token
     default_model: str = "best_match"  # weather model unless a spot overrides it
+    default_cell: str = "land"  # forecast grid cell for newly added spots: land|sea|nearest
 
 
 def load_settings() -> Settings:
@@ -200,6 +201,10 @@ def load_settings() -> Settings:
         s.default_model = normalize_model(raw.get("default_model", s.default_model))
     except ValueError as exc:
         raise SystemExit(f"config.yaml default_model: {exc}") from exc
+    s.default_cell = str(raw.get("default_cell", s.default_cell)).strip().lower()
+    if s.default_cell not in ("land", "sea", "nearest"):
+        raise SystemExit(f"config.yaml default_cell must be land, sea or nearest, "
+                         f"got {s.default_cell!r}")
     return s
 
 

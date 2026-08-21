@@ -743,7 +743,7 @@ async def cmd_addspot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             min_wind=existing.min_wind if existing else lo_default,
             max_wind=existing.max_wind if existing else hi_default,
             good_directions=[list(s) for s in existing.good_directions] if existing else [],
-            cell_selection=existing.cell_selection if existing else "land",
+            cell_selection=existing.cell_selection if existing else settings.default_cell,
         )
         _apply_spot_options(spot, tokens[3:], label)
         if not (-90 <= spot.lat <= 90 and -180 <= spot.lon <= 180):
@@ -804,7 +804,8 @@ async def on_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     spot = Spot(name=pending["name"],
                 lat=round(msg.location.latitude, 5),
                 lon=round(msg.location.longitude, 5),
-                min_wind=lo, max_wind=hi)
+                min_wind=lo, max_wind=hi,
+                cell_selection=settings.default_cell)
     spots = config.load_spots(settings)
     existing = _find_spot(spots, spot.name)
     if existing is not None:
