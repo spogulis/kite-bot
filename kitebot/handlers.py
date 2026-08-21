@@ -25,7 +25,7 @@ from .checker import gather_results
 from .config import Spot, Subscription
 from .messages import (
     DIRECTION_LABELS_LV, any_windows, build_digest, describe_spot,
-    split_message, unit_label,
+    format_window, split_message, unit_label,
 )
 
 log = logging.getLogger(__name__)
@@ -357,12 +357,17 @@ async def _route_text(settings, offset: int, prefer: "str | None",
     name, best_hours, drive_km, within = routes.best_single(items, origin, max_drive_km)
     hours = f"{round(best_hours * 2) / 2:g}".replace(".", ",")
     drive_txt = f", 🚗 ~{round(drive_km)} km no tevis" if drive_km is not None else ""
+    label = unit_label(settings.wind_unit)
+    conditions = "\n".join(format_window(w, label)
+                           for spot, w in items if spot.name == name)
     if not within:
-        return (f"🗺 {day_lv}: {round(max_drive_km)} km robežās no tevis braucama vēja "
-                f"nav. Tuvākais spots ar vēju: {html.escape(name)} "
-                f"(~{hours} h ūdenī{drive_txt}).")
-    return (f"🗺 {day_lv}: braukāt apkārt neatmaksājas — labākais ir palikt "
-            f"spotā {html.escape(name)} (~{hours} h ūdenī{drive_txt}).")
+        head = (f"🗺 {day_lv}: {round(max_drive_km)} km robežās no tevis braucama vēja "
+                f"nav. Tuvākais spots ar vēju: <b>{html.escape(name)}</b> "
+                f"(~{hours} h ūdenī{drive_txt}):")
+    else:
+        head = (f"🗺 {day_lv}: braukāt apkārt neatmaksājas — labākais ir palikt "
+                f"spotā <b>{html.escape(name)}</b> (~{hours} h ūdenī{drive_txt}):")
+    return head + "\n" + conditions
 
 
 async def _cb_route(query, context, settings, arg: str) -> None:
