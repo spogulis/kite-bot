@@ -87,6 +87,7 @@ Work the same in groups and in private chats.
 | Command | What it does |
 | --- | --- |
 | `/prognoze` | Forecast for all spots — a pure planning view |
+| `/marsruts` | Day-route planner (Šodien/Rīt/Parīt buttons): chains rideable windows across spots when the wind moves, with drive-time estimates; the morning digest also suggests a route on days where chaining beats the best single spot by 2+ h |
 | `/menu` (or `/start`) | Buttons: check all spots or a single one with one tap |
 | `/check [spot]` | Forecast check as a text command |
 | `/spots` | List configured spots and their settings |

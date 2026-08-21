@@ -283,6 +283,61 @@ def test_normalize_model():
         normalize_model("wrf")
 
 
+def _route_fixtures():
+    from kitebot.analysis import Window
+
+    def w(spot_hourly, hour_from, hour_to, speed=8.0):
+        return Window(start=datetime(2026, 8, 22, hour_from, tzinfo=TZ),
+                      end=datetime(2026, 8, 22, hour_to, tzinfo=TZ),
+                      min_speed=speed, max_speed=speed + 2, max_gust=speed + 5,
+                      direction=315.0)
+
+    near_a = spot(name="Alfa", lat=57.00, lon=24.00)
+    near_b = spot(name="Beta", lat=57.36, lon=24.00)   # ~40 km north
+    far_c = spot(name="Cerija", lat=59.70, lon=24.00)  # ~300 km north
+    return w, near_a, near_b, far_c
+
+
+def test_route_chains_two_spots_with_travel_gap():
+    from kitebot.routes import day_route
+    w, a, b, _ = _route_fixtures()
+    legs, total, single = day_route([(a, w(a, 10, 13)), (b, w(b, 15, 19))])
+    assert [leg.spot.name for leg in legs] == ["Alfa", "Beta"]
+    assert legs[1].travel_km > 30
+    assert legs[1].start.hour == 15  # arrived before the window opened
+    assert total == 7 and single == 4
+
+
+def test_route_clips_second_leg_to_arrival():
+    from kitebot.routes import day_route
+    w, a, b, _ = _route_fixtures()
+    legs, total, _ = day_route([(a, w(a, 10, 13)), (b, w(b, 13, 18))])
+    assert len(legs) == 2
+    assert legs[1].start > legs[1].window.start  # clipped: still driving at 13:00
+    assert 6.5 < total < 7.5
+
+
+def test_route_infeasible_when_too_far():
+    from kitebot.routes import day_route
+    w, a, _, c = _route_fixtures()
+    legs, _, single = day_route([(a, w(a, 10, 13)), (c, w(c, 13, 17))])
+    assert legs == []  # 300 km drive eats the whole second window
+    assert single == 4
+
+
+def test_route_sections_only_on_clear_gain():
+    from kitebot.config import Settings
+    from kitebot.messages import SpotResult
+    from kitebot.routes import route_sections
+    w, a, b, _ = _route_fixtures()
+    results = [SpotResult(spot=a, windows=[w(a, 10, 13)]),
+               SpotResult(spot=b, windows=[w(b, 15, 19)])]
+    section = route_sections(results, Settings())
+    assert section and "Maršruts" in section and "🚗" in section
+    # a lone spot never produces a route section
+    assert route_sections([SpotResult(spot=a, windows=[w(a, 10, 13)])], Settings()) is None
+
+
 def test_normalize_wind_unit():
     assert normalize_wind_unit("m/s") == "ms"
     assert normalize_wind_unit("MS") == "ms"
