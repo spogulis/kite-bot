@@ -144,6 +144,7 @@ restart — friends keep their personal DM digests, but editing is locked down.
 | `min_window_hours` | `2` | Minimum consecutive rideable hours |
 | `wind_band` | per unit (3 m/s / 6 kn) | Max wind spread reported as one line; bigger changes split the day into separate lines (different kite sizes). `0` disables |
 | `default_model` | `best_match` | Weather model: `best`, `gfs` (Windguru's), `icon`, `ecmwf`; per-spot override via `model=` |
+| `default_cell` | `land` | Forecast grid cell for newly added spots: `sea` reads the wind over the water — set it if your spots are coastal (the example config does); `land` suits small lakes/lagoons |
 | `day_start_hour` / `day_end_hour` | `8` / `20` | Daylight window (spot-local time) |
 | `admin_user_ids` | `[]` | Who may change spots/subscriptions (see above) |
 

@@ -7,6 +7,8 @@ timezone: Europe/Riga        # time zone for the daily digest schedule below
 wind_unit: ms                # kn, ms, kmh or mph — used for thresholds, messages and forecasts
 default_model: gfs           # weather model: best (Open-Meteo blend), gfs (same as Windguru), icon, ecmwf
                              # per-spot override: /addspot Nosaukums model=icon
+default_cell: sea            # forecast grid cell for NEW spots: sea = wind over the water
+                             # (right for coastal/gulf spots); land only for small lakes/lagoons
 daily_post_time: "07:00"     # when the daily digest is posted to subscribed chats
 daily_greeting: "Labrīt, kaiteri!"   # first line of the daily post; "" disables it
 forecast_days: 3             # days ahead to scan (1-7)
