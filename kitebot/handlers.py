@@ -18,7 +18,7 @@ from telegram.ext import (
     MessageHandler, filters,
 )
 
-from . import config, surfr, woo
+from . import config, routes, surfr, woo
 from .analysis import sectors_from_toggles, toggles_from_sectors
 from .checker import gather_results
 from .config import Spot, Subscription
@@ -43,6 +43,7 @@ HELP_LV = """\
 
 <b>Prognoze</b>
 /prognoze — prognoze visiem spotiem
+/marsruts — dienas maršruts, ja vējš maina spotus
 /menu — prognoze ar pogām (viss vai viens spots)
 /check — prognoze visiem spotiem
 /check &lt;spots&gt; — vienam spotam
@@ -300,6 +301,61 @@ async def cmd_prognoze(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     thread_id = msg.message_thread_id if msg.is_topic_message else None
     await _run_check(context, msg.chat_id, thread_id, spots, settings, spots)
+
+
+ROUTE_DAYS_LV = ["Šodien", "Rīt", "Parīt"]
+
+
+async def cmd_marsruts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.effective_message
+    if msg is None:
+        return
+    settings = config.load_settings()
+    spots = config.load_spots(settings)
+    if len(spots) < 2:
+        await msg.reply_text("Maršrutam vajag vismaz divus spotus.")
+        return
+    days = min(settings.forecast_days, len(ROUTE_DAYS_LV))
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton(ROUTE_DAYS_LV[i], callback_data=f"route:{i}")
+        for i in range(days)
+    ]])
+    await msg.reply_text("🗺 Kurai dienai plānot maršrutu?", reply_markup=keyboard)
+
+
+async def _cb_route(query, context, settings, arg: str) -> None:
+    try:
+        offset = max(0, min(int(arg), settings.forecast_days - 1))
+    except ValueError:
+        await query.answer()
+        return
+    await query.answer("Plānoju maršrutu…")
+    m = query.message
+    if m is None:
+        return
+    thread_id = m.message_thread_id if getattr(m, "is_topic_message", False) else None
+    spots = config.load_spots(settings)
+    results = await gather_results(spots, settings)
+    tz = ZoneInfo(settings.timezone)
+    target = (datetime.now(tz) + timedelta(days=offset)).date()
+    day_lv = ROUTE_DAYS_LV[offset] if offset < len(ROUTE_DAYS_LV) else target.isoformat()
+    items = [(r.spot, w) for r in results for w in r.windows if w.start.date() == target]
+    if not items:
+        text = f"🗺 {day_lv}: nevienā spotā nav braucama vēja — maršrutu nesanāk."
+    else:
+        legs, total, single = routes.day_route(items)
+        if legs and total >= single + 0.5:
+            text = routes.format_route(legs, total, settings)
+        else:
+            by_spot: dict = {}
+            for spot, w in items:
+                by_spot[spot.name] = by_spot.get(spot.name, 0.0) + w.hours
+            best_name, best_hours = max(by_spot.items(), key=lambda kv: kv[1])
+            hours = f"{round(best_hours * 2) / 2:g}".replace(".", ",")
+            text = (f"🗺 {day_lv}: braukāt apkārt neatmaksājas — labākais ir palikt "
+                    f"spotā {html.escape(best_name)} (~{hours} h ūdenī).")
+    await context.bot.send_message(chat_id=m.chat.id, text=text,
+                                   parse_mode=ParseMode.HTML, message_thread_id=thread_id)
 
 
 async def cmd_spots(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -564,6 +620,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await _cb_merge_do(query, context, settings, data[len("wm2:"):])
     elif data == "riders":
         await _cb_riders_view(query, context, settings)
+    elif data.startswith("route:"):
+        await _cb_route(query, context, settings, data[len("route:"):])
     else:
         await query.answer()
 
@@ -1224,6 +1282,7 @@ async def cmd_testdigest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         pass
     results = await gather_results(spots, settings)
     woo_section, woo_status = await build_woo_section(settings, update_records=False)
+    route_section = routes.route_sections(results, settings)  # before any chat filter
     sub = config.find_subscription(msg.chat_id, thread_id)
     if sub is not None:
         results = _filter_results(results, sub)
@@ -1239,7 +1298,8 @@ async def cmd_testdigest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if sub is not None and sub.spots:
         outro += f"\nŠī čata spotu filtrs: {', '.join(sub.spots)}."
     outro += f"\nWOO: {woo_status}."
-    text = intro + "\n\n" + _daily_text(results, settings, extra=woo_section) + "\n\n" + outro
+    extra = "\n\n".join(part for part in (route_section, woo_section) if part) or None
+    text = intro + "\n\n" + _daily_text(results, settings, extra=extra) + "\n\n" + outro
     for part in split_message(text):
         await msg.reply_html(part)
 
@@ -1256,6 +1316,8 @@ async def daily_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     results = await gather_results(spots, settings, robust=True)
     woo_section, _ = await build_woo_section(settings, update_records=True)
+    route_section = routes.route_sections(results, settings)  # computed on all spots
+    extra = "\n\n".join(part for part in (route_section, woo_section) if part) or None
     keyboard = _menu_keyboard(spots)
     cache: dict = {}
     for sub in subs:
@@ -1265,7 +1327,7 @@ async def daily_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             continue
         key = tuple(sorted(n.lower() for n in sub.spots))
         if key not in cache:
-            cache[key] = split_message(_daily_text(filtered, settings, extra=woo_section))
+            cache[key] = split_message(_daily_text(filtered, settings, extra=extra))
         await _send_digest(context, sub, cache[key], keyboard)
 
 
@@ -1304,6 +1366,7 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def post_init(app: Application) -> None:
     await app.bot.set_my_commands([
         BotCommand("prognoze", "prognoze visiem spotiem"),
+        BotCommand("marsruts", "dienas maršruts starp spotiem"),
         BotCommand("menu", "prognoze ar pogām"),
         BotCommand("check", "prognoze visiem spotiem"),
         BotCommand("spots", "spotu saraksts"),
@@ -1330,6 +1393,7 @@ def register(app: Application) -> None:
     app.add_handler(CommandHandler(["start", "menu"], cmd_menu))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("prognoze", cmd_prognoze))
+    app.add_handler(CommandHandler("marsruts", cmd_marsruts))
     app.add_handler(CommandHandler("check", cmd_check))
     app.add_handler(CommandHandler("spots", cmd_spots))
     app.add_handler(CommandHandler("addspot", cmd_addspot))
