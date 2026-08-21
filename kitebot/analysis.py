@@ -44,6 +44,14 @@ class Window:
         return (self.end - self.start).total_seconds() / 3600
 
 
+DRY_MM_PER_HOUR = 0.5  # up to this average intensity still counts as "dry"
+
+
+def dry_windows(windows: list, mm_per_hour: float = DRY_MM_PER_HOUR) -> list:
+    """Windows without meaningful rain; a light drizzle does not count."""
+    return [w for w in windows if w.rain_mm <= mm_per_hour * w.hours]
+
+
 def compass(deg: float) -> str:
     return COMPASS[int(deg / 22.5 + 0.5) % 16]
 

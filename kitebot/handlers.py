@@ -20,11 +20,11 @@ from telegram.ext import (
 )
 
 from . import config, routes, surfr, woo
-from .analysis import sectors_from_toggles, toggles_from_sectors
+from .analysis import dry_windows, sectors_from_toggles, toggles_from_sectors
 from .checker import gather_results
 from .config import Spot, Subscription
 from .messages import (
-    DIRECTION_LABELS_LV, any_windows, build_digest, describe_spot,
+    DIRECTION_LABELS_LV, SpotResult, any_windows, build_digest, describe_spot,
     format_window, split_message, unit_label,
 )
 
@@ -44,6 +44,7 @@ HELP_LV = """\
 
 <b>Prognoze</b>
 /prognoze — prognoze visiem spotiem
+/prognoze sauss — tikai logi bez lietus
 /marsruts — dienas maršruts, ja vējš maina spotus
 
 <b>Mans profils</b>
@@ -197,7 +198,8 @@ def _subscription_for(msg) -> Subscription:
 # --- keyboards ----------------------------------------------------------------
 
 def _menu_keyboard(spots: list) -> InlineKeyboardMarkup:
-    rows = [[InlineKeyboardButton("🌍 Visi spoti", callback_data="check:*")]]
+    rows = [[InlineKeyboardButton("🌍 Visi spoti", callback_data="check:*"),
+             InlineKeyboardButton("☀️ Bez lietus", callback_data="check:*dry")]]
     row: list = []
     for s in spots:
         row.append(InlineKeyboardButton(s.name, callback_data=f"check:{s.name}"))
@@ -242,17 +244,24 @@ def _dir_keyboard(spot: Spot) -> InlineKeyboardMarkup:
 # --- forecast ------------------------------------------------------------------
 
 async def _run_check(context: ContextTypes.DEFAULT_TYPE, chat_id: int, thread_id,
-                     spots: list, settings, requested_by: "str | None" = None) -> None:
+                     spots: list, settings, requested_by: "str | None" = None,
+                     dry: bool = False) -> None:
     """Send a forecast digest. requested_by names the person whose button tap
     triggered it (typed commands are attributed by the command message itself).
-    Results carry no buttons — fresh checks go via /prognoze or /menu."""
+    dry=True hides windows with meaningful rain. Results carry no buttons —
+    fresh checks go via /prognoze or /menu."""
     try:
         await context.bot.send_chat_action(
             chat_id=chat_id, action=ChatAction.TYPING, message_thread_id=thread_id)
     except TelegramError:
         pass
     results = await gather_results(spots, settings)
-    text = build_digest(results, settings)
+    title = "Kaita prognoze"
+    if dry:
+        results = [SpotResult(spot=r.spot, windows=dry_windows(r.windows), error=r.error)
+                   for r in results]
+        title = "Kaita prognoze bez lietus"
+    text = build_digest(results, settings, title=title)
     if requested_by:
         text += f"\n\n👤 Pieprasīja: {html.escape(requested_by)}"
     for part in split_message(text):
@@ -301,7 +310,8 @@ async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_prognoze(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Forecast for ALL spots, nothing else — a pure planning view."""
+    """Forecast for ALL spots, nothing else — a pure planning view.
+    Any argument (e.g. /prognoze sauss) hides windows with meaningful rain."""
     msg = update.effective_message
     if msg is None:
         return
@@ -311,7 +321,8 @@ async def cmd_prognoze(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await msg.reply_text("Vēl nav neviena spota.\n" + addspot_usage(settings))
         return
     thread_id = msg.message_thread_id if msg.is_topic_message else None
-    await _run_check(context, msg.chat_id, thread_id, spots, settings)
+    await _run_check(context, msg.chat_id, thread_id, spots, settings,
+                     dry=bool(context.args))
 
 
 ROUTE_DAYS_LV = ["Šodien", "Rīt", "Parīt"]
@@ -915,6 +926,9 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 async def _cb_check(query, context, settings, target: str) -> None:
     spots = config.load_spots(settings)
+    dry = False
+    if target == "*dry":
+        target, dry = "*", True
     selected = spots if target == "*" else [s for s in spots if s.name.lower() == target.lower()]
     if not selected:
         await query.answer("Šis spots vairs nav sarakstā.", show_alert=True)
@@ -928,7 +942,7 @@ async def _cb_check(query, context, settings, target: str) -> None:
     if m.chat.type != ChatType.PRIVATE and query.from_user is not None:
         requested_by = query.from_user.full_name
     await _run_check(context, m.chat.id, thread_id, selected, settings,
-                     requested_by=requested_by)
+                     requested_by=requested_by, dry=dry)
 
 
 async def _cb_manage_view(query, context, settings) -> None:
