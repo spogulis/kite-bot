@@ -26,6 +26,7 @@ DATA_DIR = ROOT / "data"
 SPOTS_FILE = DATA_DIR / "spots.yaml"
 SUBSCRIPTIONS_FILE = DATA_DIR / "subscriptions.json"
 RIDERS_FILE = DATA_DIR / "riders.json"
+USERS_FILE = DATA_DIR / "users.json"
 
 # Wind units supported by Open-Meteo's wind_speed_unit parameter.
 UNIT_LABELS = {"kn": "kn", "ms": "m/s", "kmh": "km/h", "mph": "mph"}
@@ -407,6 +408,35 @@ def merge_riders(prefix_a: str, prefix_b: str) -> "dict | None":
     riders.remove(b)
     save_riders(riders)
     return a
+
+
+def to_knots(value: float, unit: str) -> float:
+    """Convert a wind speed in the configured unit to knots."""
+    return value / _KNOTS_TO.get(unit, 1.0)
+
+
+def _load_profiles() -> dict:
+    if not USERS_FILE.exists():
+        return {}
+    try:
+        return json.loads(USERS_FILE.read_text())
+    except json.JSONDecodeError:
+        log.warning("could not parse %s, treating as empty", USERS_FILE)
+        return {}
+
+
+def get_profile(user_id: int) -> dict:
+    """Personal profile: {"home": {"lat","lon"}, "quiver": [m2...], "weight_kg": float}."""
+    return _load_profiles().get(str(user_id), {})
+
+
+def update_profile(user_id: int, **fields) -> dict:
+    profiles = _load_profiles()
+    profile = profiles.setdefault(str(user_id), {})
+    profile.update(fields)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    USERS_FILE.write_text(json.dumps(profiles, indent=2, ensure_ascii=False))
+    return profile
 
 
 def get_token() -> str:

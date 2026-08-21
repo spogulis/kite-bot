@@ -366,6 +366,33 @@ def test_best_single_honours_origin_and_limit():
     assert name == "Cerija" and not within and drive > 50
 
 
+def test_pick_kite_heuristic():
+    from kitebot.routes import pick_kite
+    quiver = [12, 9, 7]
+    # 85 kg, 10 m/s (~19.4 kn) -> ideal ~9.6 -> the 9
+    assert pick_kite(10, "ms", 85, quiver) == 9
+    # light 6 m/s -> ideal ~16 -> the biggest kite
+    assert pick_kite(6, "ms", 85, quiver) == 12
+    # nuking 15 m/s -> ideal ~6.4 -> the smallest
+    assert pick_kite(15, "ms", 85, quiver) == 7
+    # incomplete profile -> no recommendation
+    assert pick_kite(10, "ms", None, quiver) is None
+    assert pick_kite(10, "ms", 85, None) is None
+
+
+def test_profile_roundtrip(tmp_path, monkeypatch):
+    from kitebot import config
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(config, "USERS_FILE", tmp_path / "users.json")
+    assert config.get_profile(7) == {}
+    config.update_profile(7, weight_kg=85.0)
+    config.update_profile(7, quiver=[12, 9], home={"lat": 56.95, "lon": 24.1})
+    profile = config.get_profile(7)
+    assert profile["weight_kg"] == 85.0
+    assert profile["quiver"] == [12, 9]
+    assert profile["home"]["lat"] == 56.95
+
+
 def test_route_origin_reported_and_clips_today():
     from kitebot.routes import day_route
     w, a, b, _ = _route_fixtures()

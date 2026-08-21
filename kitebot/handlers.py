@@ -45,6 +45,12 @@ HELP_LV = """\
 <b>Prognoze</b>
 /prognoze — prognoze visiem spotiem
 /marsruts — dienas maršruts, ja vējš maina spotus
+
+<b>Mans profils</b>
+/home — saglabāt mājas vietu maršrutiem
+/quiver 12 9 7 — saglabāt kaitu izmērus
+/weight 85 — saglabāt svaru (kaitu ieteikumiem)
+/profile — apskatīt profilu
 /menu — prognoze ar pogām (viss vai viens spots)
 /check — prognoze visiem spotiem
 /check &lt;spots&gt; — vienam spotam
@@ -309,6 +315,8 @@ ROUTE_PREFS_LV = {"s": "stiprāku vēju", "l": "vieglāku vēju", "a": "jebkādu
 
 # (chat_id, user_id) -> pending route waiting for the user's shared location
 _pending_route: dict = {}
+# (chat_id, user_id) -> pending /home waiting for the user's shared location
+_pending_home: dict = {}
 # share tokens for the "📤 Nosūtīt grupai" button on DM route results
 _route_share: dict = {}
 
@@ -337,9 +345,19 @@ def _dist_label(code: str) -> str:
     return dict(ROUTE_DISTS).get(code, "♾️").replace("♾️ Vienalga", "bez limita")
 
 
+def _profile_kite_args(user) -> tuple:
+    """(weight_kg, quiver) from the user's profile, for kite recommendations."""
+    if user is None:
+        return None, None
+    profile = config.get_profile(user.id)
+    return profile.get("weight_kg"), profile.get("quiver")
+
+
 async def _route_text(settings, offset: int, prefer: "str | None",
                       origin: "tuple | None" = None,
-                      max_drive_km: "float | None" = None) -> str:
+                      max_drive_km: "float | None" = None,
+                      weight_kg: "float | None" = None,
+                      quiver: "list | None" = None) -> str:
     spots = config.load_spots(settings)
     results = await gather_results(spots, settings)
     tz = ZoneInfo(settings.timezone)
@@ -353,13 +371,23 @@ async def _route_text(settings, offset: int, prefer: "str | None",
     legs, total, single = routes.day_route(items, prefer=prefer, origin=origin,
                                            depart_earliest=depart, max_drive_km=max_drive_km)
     if legs and total >= single + 0.5:
-        return routes.format_route(legs, total, settings)
+        return routes.format_route(legs, total, settings,
+                                   weight_kg=weight_kg, quiver=quiver)
     name, best_hours, drive_km, within = routes.best_single(items, origin, max_drive_km)
     hours = f"{round(best_hours * 2) / 2:g}".replace(".", ",")
     drive_txt = f", 🚗 ~{round(drive_km)} km no tevis" if drive_km is not None else ""
     label = unit_label(settings.wind_unit)
-    conditions = "\n".join(format_window(w, label)
-                           for spot, w in items if spot.name == name)
+    condition_lines = []
+    for spot, w in items:
+        if spot.name != name:
+            continue
+        line = format_window(w, label)
+        kite = routes.pick_kite((w.min_speed + w.max_speed) / 2,
+                                settings.wind_unit, weight_kg, quiver)
+        if kite is not None:
+            line += f" · 🪁 {kite:g}"
+        condition_lines.append(line)
+    conditions = "\n".join(condition_lines)
     if not within:
         head = (f"🗺 {day_lv}: {round(max_drive_km)} km robežās no tevis braucama vēja "
                 f"nav. Tuvākais spots ar vēju: <b>{html.escape(name)}</b> "
@@ -451,16 +479,18 @@ async def _cb_route_dist(query, context, settings, payload: str) -> None:
                 "expires": datetime.now(timezone.utc) + LOCATION_WAIT,
             }
         day_lv = ROUTE_DAYS_LV[offset] if offset < len(ROUTE_DAYS_LV) else str(offset)
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("⏭️ Bez atrašanās vietas",
-                                 callback_data=f"routego:{offset}:{pref_key}:{dist_code}"),
-        ]])
+        buttons = []
+        if user is not None and config.get_profile(user.id).get("home"):
+            buttons.append(InlineKeyboardButton(
+                "🏠 No manām mājām", callback_data=f"routeh:{offset}:{pref_key}:{dist_code}"))
+        buttons.append(InlineKeyboardButton(
+            "⏭️ Bez atrašanās vietas", callback_data=f"routego:{offset}:{pref_key}:{dist_code}"))
         try:
             await query.edit_message_text(
                 f"🗺 {day_lv}, {ROUTE_PREFS_LV.get(pref_key, '')}, {_dist_label(dist_code)} — "
                 "atsūti savu atrašanās vietu (📎 → Location), lai ņemtu vērā braucienu "
-                "no tevis, vai spied ⏭️.",
-                reply_markup=keyboard)
+                "no tevis, vai izvēlies pogu.",
+                reply_markup=InlineKeyboardMarkup([buttons]))
         except BadRequest:
             pass
         return
@@ -470,7 +500,9 @@ async def _cb_route_dist(query, context, settings, payload: str) -> None:
         await query.edit_message_text("⏳ Plānoju maršrutu…")
     except BadRequest:
         pass
-    text = await _route_text(settings, offset, prefer, max_drive_km=max_drive)
+    weight_kg, quiver = _profile_kite_args(query.from_user)
+    text = await _route_text(settings, offset, prefer, max_drive_km=max_drive,
+                             weight_kg=weight_kg, quiver=quiver)
     try:
         await query.edit_message_text(text, parse_mode=ParseMode.HTML)
     except BadRequest:
@@ -495,7 +527,42 @@ async def _cb_route_go(query, context, settings, payload: str) -> None:
         await query.edit_message_text("⏳ Plānoju maršrutu…")
     except BadRequest:
         pass
-    text = await _route_text(settings, offset, prefer, max_drive_km=max_drive)
+    weight_kg, quiver = _profile_kite_args(user)
+    text = await _route_text(settings, offset, prefer, max_drive_km=max_drive,
+                             weight_kg=weight_kg, quiver=quiver)
+    try:
+        await query.edit_message_text(text, parse_mode=ParseMode.HTML,
+                                      reply_markup=_route_share_keyboard(text))
+    except BadRequest:
+        pass
+
+
+async def _cb_route_home(query, context, settings, payload: str) -> None:
+    """DM final step using the saved home location."""
+    parsed = _parse_route_args(payload, settings)
+    if parsed is None:
+        await query.answer()
+        return
+    offset, _, prefer, _, max_drive = parsed
+    m = query.message
+    user = query.from_user
+    home = config.get_profile(user.id).get("home") if user is not None else None
+    if home is None:
+        await query.answer("Mājas vieta nav saglabāta — /home.", show_alert=True)
+        return
+    if m is not None and user is not None:
+        _pending_route.pop((m.chat.id, user.id), None)
+    await query.answer("Plānoju maršrutu…")
+    if m is None:
+        return
+    try:
+        await query.edit_message_text("⏳ Plānoju maršrutu…")
+    except BadRequest:
+        pass
+    weight_kg, quiver = _profile_kite_args(user)
+    text = await _route_text(settings, offset, prefer,
+                             origin=(home["lat"], home["lon"]), max_drive_km=max_drive,
+                             weight_kg=weight_kg, quiver=quiver)
     try:
         await query.edit_message_text(text, parse_mode=ParseMode.HTML,
                                       reply_markup=_route_share_keyboard(text))
@@ -701,11 +768,25 @@ async def on_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             return
         settings = config.load_settings()
         origin = (msg.location.latitude, msg.location.longitude)
+        weight_kg, quiver = _profile_kite_args(user)
         text = await _route_text(settings, route_pending["offset"],
                                  route_pending["prefer"], origin=origin,
-                                 max_drive_km=route_pending.get("max_drive"))
+                                 max_drive_km=route_pending.get("max_drive"),
+                                 weight_kg=weight_kg, quiver=quiver)
         keyboard = _route_share_keyboard(text) if msg.chat.type == ChatType.PRIVATE else None
         await msg.reply_html(text, reply_markup=keyboard)
+        return
+    home_pending = _pending_home.pop((msg.chat_id, user.id), None)
+    if home_pending is not None:
+        if datetime.now(timezone.utc) > home_pending["expires"]:
+            await msg.reply_text("Laiks pagājis — sāc vēlreiz ar /home.")
+            return
+        config.update_profile(user.id, home={
+            "lat": round(msg.location.latitude, 5),
+            "lon": round(msg.location.longitude, 5),
+        })
+        await msg.reply_text("🏠 Mājas vieta saglabāta! Maršrutu plānošanā tagad būs "
+                             "poga “No manām mājām”.")
         return
     pending = _pending_locations.get((msg.chat_id, user.id))
     if pending is None:
@@ -819,6 +900,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await _cb_route_dist(query, context, settings, data[len("routed:"):])
     elif data.startswith("routego:"):
         await _cb_route_go(query, context, settings, data[len("routego:"):])
+    elif data.startswith("routeh:"):
+        await _cb_route_home(query, context, settings, data[len("routeh:"):])
     elif data.startswith("rshare:"):
         await _cb_route_share(query, context, settings, data[len("rshare:"):])
     else:
@@ -952,6 +1035,79 @@ async def _cb_dir_toggle(query, context, settings, payload: str) -> None:
 
 
 # --- subscriptions & info -------------------------------------------------------
+
+# --- personal profile (home, quiver, weight) -------------------------------------
+
+async def cmd_home(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.effective_message
+    user = update.effective_user
+    if msg is None or user is None:
+        return
+    _pending_home[(msg.chat_id, user.id)] = {
+        "expires": datetime.now(timezone.utc) + LOCATION_WAIT,
+    }
+    note = ("" if msg.chat.type == ChatType.PRIVATE
+            else "\n(Labāk dari to privātā sarunā ar mani — grupā tavu vietu redzēs visi.)")
+    await msg.reply_text("🏠 Atsūti savu mājas atrašanās vietu (📎 → Location) — "
+                         f"izmantošu to maršrutu plānošanā.{note}")
+
+
+async def cmd_quiver(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.effective_message
+    user = update.effective_user
+    if msg is None or user is None:
+        return
+    parts = (msg.text or "").split()[1:]
+    sizes = []
+    for part in parts:
+        try:
+            size = float(part.replace(",", "."))
+        except ValueError:
+            sizes = []
+            break
+        if not 2 <= size <= 25:
+            sizes = []
+            break
+        sizes.append(size)
+    if not sizes or len(sizes) > 8:
+        await msg.reply_text("Lietošana: /quiver 12 9 7 — tavi kaitu izmēri m² (2–25, līdz 8 kaitiem).")
+        return
+    config.update_profile(user.id, quiver=sorted(sizes, reverse=True))
+    await msg.reply_text("🪁 Saglabāts: " + ", ".join(f"{s:g}" for s in sorted(sizes, reverse=True))
+                         + " m². Maršrutos tagad ieteiks, kurus ņemt līdzi (vajag arī /weight).")
+
+
+async def cmd_weight(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.effective_message
+    user = update.effective_user
+    if msg is None or user is None:
+        return
+    parts = (msg.text or "").split()
+    try:
+        weight = float(parts[1].replace(",", "."))
+    except (IndexError, ValueError):
+        weight = 0
+    if not 30 <= weight <= 200:
+        await msg.reply_text("Lietošana: /weight 85 — tavs svars kilogramos (30–200).")
+        return
+    config.update_profile(user.id, weight_kg=weight)
+    await msg.reply_text(f"⚖️ Saglabāts: {weight:g} kg. Maršrutos tagad ieteiks kaitu "
+                         "izmērus (vajag arī /quiver).")
+
+
+async def cmd_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.effective_message
+    user = update.effective_user
+    if msg is None or user is None:
+        return
+    profile = config.get_profile(user.id)
+    home = "saglabāta ✅" if profile.get("home") else "nav (/home)"
+    quiver = (", ".join(f"{s:g}" for s in profile["quiver"]) + " m²"
+              if profile.get("quiver") else "nav (/quiver 12 9 7)")
+    weight = f"{profile['weight_kg']:g} kg" if profile.get("weight_kg") else "nav (/weight 85)"
+    await msg.reply_text(f"👤 Tavs profils:\n🏠 Mājas vieta: {home}\n"
+                         f"🪁 Kaiti: {quiver}\n⚖️ Svars: {weight}")
+
 
 async def cmd_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.effective_message
@@ -1562,6 +1718,10 @@ async def post_init(app: Application) -> None:
     await app.bot.set_my_commands([
         BotCommand("prognoze", "prognoze visiem spotiem"),
         BotCommand("marsruts", "dienas maršruts starp spotiem"),
+        BotCommand("profile", "mans profils: mājas, kaiti, svars"),
+        BotCommand("home", "saglabāt mājas vietu"),
+        BotCommand("quiver", "saglabāt kaitu izmērus"),
+        BotCommand("weight", "saglabāt svaru"),
         BotCommand("menu", "prognoze ar pogām"),
         BotCommand("check", "prognoze visiem spotiem"),
         BotCommand("spots", "spotu saraksts"),
@@ -1589,6 +1749,10 @@ def register(app: Application) -> None:
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("prognoze", cmd_prognoze))
     app.add_handler(CommandHandler("marsruts", cmd_marsruts))
+    app.add_handler(CommandHandler("home", cmd_home))
+    app.add_handler(CommandHandler("quiver", cmd_quiver))
+    app.add_handler(CommandHandler("weight", cmd_weight))
+    app.add_handler(CommandHandler("profile", cmd_profile))
     app.add_handler(CommandHandler("check", cmd_check))
     app.add_handler(CommandHandler("spots", cmd_spots))
     app.add_handler(CommandHandler("addspot", cmd_addspot))
