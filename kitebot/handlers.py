@@ -42,7 +42,7 @@ HELP_LV = """\
 🪁 <b>KiteBot</b> — vēja prognozes taviem kaita spotiem.
 
 <b>Prognoze</b>
-/prognoze — pilnā aina: visi spoti + vakardienas braucēji
+/prognoze — prognoze visiem spotiem
 /menu — prognoze ar pogām (viss vai viens spots)
 /check — prognoze visiem spotiem
 /check &lt;spots&gt; — vienam spotam
@@ -289,8 +289,7 @@ async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_prognoze(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """The full picture on demand: forecast for ALL spots plus yesterday's
-    rider recap — the daily message's content, without the daily wrapper."""
+    """Forecast for ALL spots, nothing else — a pure planning view."""
     msg = update.effective_message
     if msg is None:
         return
@@ -300,23 +299,7 @@ async def cmd_prognoze(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await msg.reply_text("Vēl nav neviena spota.\n" + addspot_usage(settings))
         return
     thread_id = msg.message_thread_id if msg.is_topic_message else None
-    try:
-        await context.bot.send_chat_action(
-            chat_id=msg.chat_id, action=ChatAction.TYPING, message_thread_id=thread_id)
-    except TelegramError:
-        pass
-    results = await gather_results(spots, settings)
-    woo_section, _ = await build_woo_section(settings, update_records=False)
-    text = build_digest(results, settings)
-    if woo_section:
-        text += "\n\n" + woo_section
-    parts = split_message(text)
-    for i, part in enumerate(parts):
-        await context.bot.send_message(
-            chat_id=msg.chat_id, text=part, parse_mode=ParseMode.HTML,
-            message_thread_id=thread_id,
-            reply_markup=_menu_keyboard(spots) if i == len(parts) - 1 else None,
-        )
+    await _run_check(context, msg.chat_id, thread_id, spots, settings, spots)
 
 
 async def cmd_spots(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1320,7 +1303,7 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def post_init(app: Application) -> None:
     await app.bot.set_my_commands([
-        BotCommand("prognoze", "pilnā aina: visi spoti + braucēji"),
+        BotCommand("prognoze", "prognoze visiem spotiem"),
         BotCommand("menu", "prognoze ar pogām"),
         BotCommand("check", "prognoze visiem spotiem"),
         BotCommand("spots", "spotu saraksts"),
