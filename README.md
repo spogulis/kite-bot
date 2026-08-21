@@ -86,7 +86,7 @@ Work the same in groups and in private chats.
 
 | Command | What it does |
 | --- | --- |
-| `/prognoze` | The full picture on demand: forecast for all spots + yesterday's rider recap |
+| `/prognoze` | Forecast for all spots — a pure planning view |
 | `/menu` (or `/start`) | Buttons: check all spots or a single one with one tap |
 | `/check [spot]` | Forecast check as a text command |
 | `/spots` | List configured spots and their settings |
