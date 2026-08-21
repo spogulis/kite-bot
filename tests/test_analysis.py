@@ -383,6 +383,17 @@ def test_window_rain_summed_and_shown():
     assert "🌧" not in format_window(dry, "m/s")
 
 
+def test_dry_windows_filter():
+    from kitebot.analysis import Window, dry_windows
+    def w(rain, hours=3):
+        return Window(start=datetime(2026, 8, 21, 10, tzinfo=TZ),
+                      end=datetime(2026, 8, 21, 10 + hours, tzinfo=TZ),
+                      min_speed=8, max_speed=10, max_gust=13, direction=315,
+                      rain_mm=rain)
+    kept = dry_windows([w(0.0), w(1.2), w(6.0)])  # 3h windows: 0, 0.4, 2.0 mm/h
+    assert [win.rain_mm for win in kept] == [0.0, 1.2]
+
+
 def test_pick_kite_heuristic():
     from kitebot.routes import pick_kite
     quiver = [12, 9, 7]
