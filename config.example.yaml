@@ -1,0 +1,29 @@
+# KiteBot settings — copy this file to config.yaml and edit that.
+# config.yaml is gitignored (local to each machine); restart the bot after
+# editing it. Spots live in data/spots.yaml (created on first run; also
+# editable in-chat via /addspot, /manage).
+
+timezone: Europe/Riga        # time zone for the daily digest schedule below
+wind_unit: ms                # kn, ms, kmh or mph — used for thresholds, messages and forecasts
+default_model: gfs           # weather model: best (Open-Meteo blend), gfs (same as Windguru), icon, ecmwf
+                             # per-spot override: /addspot Nosaukums model=icon
+daily_post_time: "07:00"     # when the daily digest is posted to subscribed chats
+daily_greeting: "Labrīt, kaiteri!"   # first line of the daily post; "" disables it
+forecast_days: 3             # days ahead to scan (1-7)
+post_when_no_wind: true      # false = stay silent on days with nothing rideable
+min_window_hours: 2          # conditions must hold at least this many hours in a row
+# wind_band: 3               # max wind spread (in wind_unit) shown as one line; a bigger
+                             # change splits the day into separate lines (different kite sizes)
+day_start_hour: 8            # only count hours between these two (local time at the spot)
+day_end_hour: 20
+
+# WOO Sports recap uses a built-in anonymous leaderboard token. If WOO stats
+# stop appearing, grab the current token from leaderboards.woosports.com
+# (network tab, Authorization header) and set it here:
+# woo_token: ""
+# surfr_token: ""            # same idea for Surfr (thesurfr.app) riders
+
+# Telegram user ids that may edit spots and (un)subscribe chats, wherever they
+# write. Empty list = group admins may manage in groups, anyone in a private
+# chat. Find your id with /id. Example: [12345678]
+admin_user_ids: []
