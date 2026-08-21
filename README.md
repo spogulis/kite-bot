@@ -113,7 +113,10 @@ admin so it can see the location message.
 - Managing a chat's daily digest (`/subscribe`, `/myspots`, `/unsubscribe`) —
   in a **private chat**, always the person themselves (it only affects their
   own DM); in a **group**, only group admins.
-- Editing shared state (spots, riders, records) — users listed in
+- Adding spots and tuning their wind directions — **any member, inside the
+  group** (the group is the trust boundary); in private chats only admins
+  (see below).
+- Deleting spots and managing riders/records — users listed in
   `admin_user_ids` anywhere, and group admins within their group. In private
   chats this is open **only while `admin_user_ids` is empty** (the
   bootstrap default so you can set things up before knowing your user id).

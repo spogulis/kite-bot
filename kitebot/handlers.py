@@ -161,6 +161,24 @@ async def _can_manage_subscription(update: Update, context: ContextTypes.DEFAULT
     return await _can_configure(update, context, settings)
 
 
+async def _can_edit_spots(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                          settings) -> bool:
+    """Adding spots and tuning their wind directions is open to every group
+    member — the group is the trust boundary. Private chats keep the admin
+    gate (any Telegram user can DM a bot). Deleting stays admin-only."""
+    chat = update.effective_chat
+    if chat is not None and chat.type != ChatType.PRIVATE:
+        return True
+    return await _can_configure(update, context, settings)
+
+
+async def _cb_can_edit_spots(query, context: ContextTypes.DEFAULT_TYPE, settings) -> bool:
+    chat = query.message.chat if query.message is not None else None
+    if chat is not None and chat.type != ChatType.PRIVATE:
+        return True
+    return await _cb_admin(query, context, settings)
+
+
 async def _cb_admin(query, context: ContextTypes.DEFAULT_TYPE, settings) -> bool:
     chat = query.message.chat if query.message is not None else None
     if await _is_admin(context, chat, query.from_user, settings):
@@ -340,7 +358,7 @@ async def cmd_addspot(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if msg is None or user is None:
         return
     settings = config.load_settings()
-    if not await _can_configure(update, context, settings):
+    if not await _can_edit_spots(update, context, settings):
         return
     usage = addspot_usage(settings)
     raw = (msg.text or "").split(maxsplit=1)
@@ -610,7 +628,7 @@ async def _cb_delete(query, context, settings, name: str) -> None:
 
 
 async def _cb_dir_open(query, context, settings, name: str) -> None:
-    if not await _cb_admin(query, context, settings):
+    if not await _cb_can_edit_spots(query, context, settings):
         return
     spot = _find_spot(config.load_spots(settings), name)
     if spot is None:
@@ -631,7 +649,7 @@ async def _cb_dir_toggle(query, context, settings, payload: str) -> None:
     if not name:
         await query.answer()
         return
-    if not await _cb_admin(query, context, settings):
+    if not await _cb_can_edit_spots(query, context, settings):
         return
     spots = config.load_spots(settings)
     spot = _find_spot(spots, name)
