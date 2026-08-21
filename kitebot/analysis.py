@@ -26,6 +26,7 @@ class HourPoint:
     speed: float            # mean wind speed at 10 m, in the configured unit
     gusts: float            # gust speed at 10 m
     direction: float        # meteorological: degrees the wind blows FROM
+    rain: float = 0.0       # precipitation for the hour, mm
 
 
 @dataclass
@@ -36,6 +37,7 @@ class Window:
     max_speed: float
     max_gust: float
     direction: float        # circular mean over the window
+    rain_mm: float = 0.0    # total precipitation over the window
 
     @property
     def hours(self) -> float:
@@ -94,6 +96,7 @@ def _window_from(segment: list) -> Window:
         max_speed=max(p.speed for p in segment),
         max_gust=max(p.gusts for p in segment),
         direction=circular_mean([p.direction for p in segment]),
+        rain_mm=sum(p.rain for p in segment),
     )
 
 

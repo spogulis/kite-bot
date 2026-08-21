@@ -13,7 +13,7 @@ from datetime import timedelta
 from math import asin, cos, radians, sin, sqrt
 
 from .config import to_knots
-from .messages import WEEKDAYS_LV, direction_word, unit_label
+from .messages import WEEKDAYS_LV, direction_word, rain_note, unit_label
 
 KITE_FACTOR = 2.2  # kite size m² ≈ 2.2 × rider kg / wind kn (twintip rule of thumb)
 
@@ -224,7 +224,7 @@ def format_route(legs: list, total_hours: float, settings,
                 kites.append(kite)
         lines.append(f"{emoji} {leg.start:%H:%M}–{w.end:%H:%M} · "
                      f"{html.escape(leg.spot.name)} · {speed} (brāzmas {round(w.max_gust)}) · "
-                     f"{direction_word(w.direction)}{kite_txt}")
+                     f"{direction_word(w.direction)}{rain_note(w.rain_mm)}{kite_txt}")
     if len(kites) > 1:
         sizes = " + ".join(f"{k:g}" for k in sorted(kites, reverse=True))
         lines.append(f"🪁 Ņem līdzi: {sizes}")
