@@ -150,6 +150,17 @@ async def _can_configure(update: Update, context: ContextTypes.DEFAULT_TYPE, set
     return False
 
 
+async def _can_manage_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                                   settings) -> bool:
+    """Subscriptions in a PRIVATE chat only affect that person's own DM, so
+    anyone may manage them there even when admin_user_ids restricts editing.
+    Group subscriptions stay admin-only."""
+    chat = update.effective_chat
+    if chat is not None and chat.type == ChatType.PRIVATE:
+        return True
+    return await _can_configure(update, context, settings)
+
+
 async def _cb_admin(query, context: ContextTypes.DEFAULT_TYPE, settings) -> bool:
     chat = query.message.chat if query.message is not None else None
     if await _is_admin(context, chat, query.from_user, settings):
@@ -664,7 +675,7 @@ async def cmd_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if msg is None:
         return
     settings = config.load_settings()
-    if not await _can_configure(update, context, settings):
+    if not await _can_manage_subscription(update, context, settings):
         return
     if config.add_subscription(_subscription_for(msg)):
         note = "" if settings.post_when_no_wind else " dienās, kad ir braucams vējš"
@@ -707,7 +718,7 @@ async def cmd_myspots(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if msg is None:
         return
     settings = config.load_settings()
-    if not await _can_configure(update, context, settings):
+    if not await _can_manage_subscription(update, context, settings):
         return
     thread_id = msg.message_thread_id if msg.is_topic_message else None
     sub = config.find_subscription(msg.chat_id, thread_id)
@@ -722,11 +733,12 @@ async def cmd_myspots(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
 
 async def _cb_sub_toggle(query, context, settings, action: str) -> None:
-    if not await _cb_admin(query, context, settings):
-        return
     m = query.message
     if m is None:
         await query.answer()
+        return
+    # own-DM subscriptions are personal: no admin gate in private chats
+    if m.chat.type != ChatType.PRIVATE and not await _cb_admin(query, context, settings):
         return
     thread_id = m.message_thread_id if getattr(m, "is_topic_message", False) else None
     sub = config.find_subscription(m.chat.id, thread_id)
@@ -769,7 +781,7 @@ async def cmd_unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if msg is None:
         return
     settings = config.load_settings()
-    if not await _can_configure(update, context, settings):
+    if not await _can_manage_subscription(update, context, settings):
         return
     if config.remove_subscription(_subscription_for(msg)):
         await msg.reply_text("Ikdienas prognoze šeit atslēgta.")

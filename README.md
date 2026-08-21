@@ -107,10 +107,21 @@ messages (including shared locations) from bots in groups. Either do the
 `/addspot Name` + location flow in a DM with the bot, or make the bot a group
 admin so it can see the location message.
 
-**Who may configure:** users listed in `admin_user_ids` (config.yaml) always;
-group admins within their group; and in private chats anyone, unless
-`admin_user_ids` is set. Forecast commands (`/check`, `/spots`) are open to
-everyone.
+**Who may do what:**
+
+- Forecast commands (`/check`, `/menu`, `/spots`, `/records`) — everyone.
+- Managing a chat's daily digest (`/subscribe`, `/myspots`, `/unsubscribe`) —
+  in a **private chat**, always the person themselves (it only affects their
+  own DM); in a **group**, only group admins.
+- Editing shared state (spots, riders, records) — users listed in
+  `admin_user_ids` anywhere, and group admins within their group. In private
+  chats this is open **only while `admin_user_ids` is empty** (the
+  bootstrap default so you can set things up before knowing your user id).
+
+⚠️ **Set `admin_user_ids` before inviting others**: with it empty, *any*
+Telegram user who discovers the bot can DM it and edit your spots and riders.
+Get your id with `/id`, put it in config.yaml (`admin_user_ids: [12345678]`),
+restart — friends keep their personal DM digests, but editing is locked down.
 
 ## Configuration reference
 
