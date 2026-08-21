@@ -135,6 +135,36 @@ def day_route(items: list, prefer: "str | None" = None, origin: "tuple | None" =
     return best_legs, best_total, best_single
 
 
+def best_single(items: list, origin: "tuple | None" = None,
+                max_drive_km: "float | None" = None) -> tuple:
+    """The best spot to STAY at, honouring the rider's origin and drive limit.
+
+    Returns (name, hours, drive_km | None, within_limit). When nothing has
+    wind inside the limit, returns the nearest spot that does, with
+    within_limit=False so the caller can say so honestly.
+    """
+    by_spot: dict = {}
+    spot_by_name: dict = {}
+    for spot, window in items:
+        by_spot[spot.name] = by_spot.get(spot.name, 0.0) + window.hours
+        spot_by_name[spot.name] = spot
+
+    def drive(name):
+        if origin is None:
+            return None
+        return travel_from(origin[0], origin[1], spot_by_name[name])[1]
+
+    if origin is not None and max_drive_km is not None:
+        inside = {n: h for n, h in by_spot.items() if drive(n) <= max_drive_km}
+        if inside:
+            name, hours = max(inside.items(), key=lambda kv: kv[1])
+            return name, hours, drive(name), True
+        name = min(by_spot, key=drive)
+        return name, by_spot[name], drive(name), False
+    name, hours = max(by_spot.items(), key=lambda kv: kv[1])
+    return name, hours, drive(name), True
+
+
 def _duration_lv(minutes: float) -> str:
     minutes = round(minutes / 5) * 5
     hours, mins = divmod(int(minutes), 60)
