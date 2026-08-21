@@ -47,19 +47,24 @@ _UNIT_ALIASES = {
     "mph": "mph",
 }
 
-# Open-Meteo weather models; "gfs" is the model Windguru's primary forecast uses.
+# Open-Meteo weather models; "gfs" is the model Windguru's GFS 13 km table uses,
+# "harmonie" the 2 km HARMONIE (Windguru's HARM-DK column) — high resolution,
+# northern/central Europe only, ~2 days ahead at full detail.
 WEATHER_MODELS = {
     "best": "best_match", "best_match": "best_match",
     "gfs": "gfs_seamless", "gfs_seamless": "gfs_seamless",
     "icon": "icon_seamless", "icon_seamless": "icon_seamless",
     "ecmwf": "ecmwf_ifs025", "ecmwf_ifs025": "ecmwf_ifs025",
+    "harmonie": "dmi_seamless", "harm": "dmi_seamless", "dmi_seamless": "dmi_seamless",
+    "knmi": "knmi_seamless", "knmi_seamless": "knmi_seamless",
 }
 
 
 def normalize_model(value) -> str:
     model = WEATHER_MODELS.get(str(value).strip().lower())
     if model is None:
-        raise ValueError(f"modelim jābūt vienam no: best, gfs, icon, ecmwf — saņēmu {value!r}")
+        raise ValueError("modelim jābūt vienam no: best, gfs, icon, ecmwf, harmonie — "
+                         f"saņēmu {value!r}")
     return model
 
 

@@ -279,6 +279,7 @@ def test_normalize_model():
     assert normalize_model("GFS") == "gfs_seamless"
     assert normalize_model("best") == "best_match"
     assert normalize_model("icon_seamless") == "icon_seamless"
+    assert normalize_model("harmonie") == "dmi_seamless"
     with pytest.raises(ValueError):
         normalize_model("wrf")
 
