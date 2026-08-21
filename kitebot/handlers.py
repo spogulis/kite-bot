@@ -84,17 +84,10 @@ DIR_TEXT_LV = (
 
 
 def addspot_usage(settings) -> str:
-    label = unit_label(settings.wind_unit)
-    lo, hi = config.UNIT_DEFAULT_RANGE[settings.wind_unit]
-    return (
-        "Vienkāršākais veids: uzraksti “/addspot Nosaukums” un pēc tam atsūti "
-        "spota atrašanās vietu (📎 → Location).\n"
-        f'Pilnā forma: /addspot "Nosaukums" lat lon [min={round(lo)}] [max={round(hi)}] '
-        "[dirs=290-20,110-170] [cell=land|sea|nearest] [model=best|gfs|icon|ecmwf]\n"
-        f"min/max ir vēja ātrums ({label}); dirs — sektori grādos, NO kurienes pūš vējš; "
-        "model=gfs izmanto to pašu modeli, ko Windguru pamata prognoze.\n"
-        "Esošam spotam var mainīt tikai iestatījumus: /addspot Nosaukums cell=sea model=gfs"
-    )
+    # The full lat/lon + key=value form still works; it lives in the README so
+    # the in-chat help stays simple.
+    return ("Uzraksti “/addspot Nosaukums” un pēc tam atsūti spota "
+            "atrašanās vietu (📎 → Location).")
 
 
 def _spots_word(n: int) -> str:
