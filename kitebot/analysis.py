@@ -3,7 +3,7 @@ into contiguous kiteable windows. Wind speeds are unit-agnostic — thresholds
 and forecast values just need to share the same unit."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from math import atan2, cos, degrees, radians, sin
 
@@ -42,6 +42,21 @@ class Window:
     @property
     def hours(self) -> float:
         return (self.end - self.start).total_seconds() / 3600
+
+
+def clip_past(windows: list, now: datetime) -> list:
+    """Drop windows that already ended; trim a running window to start now
+    (rain prorated to the remaining share). `now` must be timezone-aware."""
+    out = []
+    for w in windows:
+        if w.end <= now:
+            continue
+        if w.start < now:
+            local_now = now.astimezone(w.start.tzinfo).replace(second=0, microsecond=0)
+            fraction = (w.end - local_now) / (w.end - w.start)
+            w = replace(w, start=local_now, rain_mm=w.rain_mm * fraction)
+        out.append(w)
+    return out
 
 
 DRY_MM_PER_HOUR = 0.5  # up to this average intensity still counts as "dry"

@@ -383,6 +383,22 @@ def test_window_rain_summed_and_shown():
     assert "🌧" not in format_window(dry, "m/s")
 
 
+def test_clip_past_windows():
+    from kitebot.analysis import Window, clip_past
+    def w(h1, h2, rain=0.0):
+        return Window(start=datetime(2026, 8, 21, h1, tzinfo=TZ),
+                      end=datetime(2026, 8, 21, h2, tzinfo=TZ),
+                      min_speed=8, max_speed=10, max_gust=13, direction=315,
+                      rain_mm=rain)
+    now = datetime(2026, 8, 21, 15, 30, tzinfo=TZ)
+    clipped = clip_past([w(10, 13), w(11, 17, rain=6.0), w(18, 20)], now)
+    assert len(clipped) == 2                       # the ended 10-13 is gone
+    running, future = clipped
+    assert running.start == now                    # trimmed to now
+    assert running.rain_mm == pytest.approx(1.5)   # 1.5h of 6h remain -> 6*0.25
+    assert future.start.hour == 18                 # future window untouched
+
+
 def test_dry_windows_filter():
     from kitebot.analysis import Window, dry_windows
     def w(rain, hours=3):
