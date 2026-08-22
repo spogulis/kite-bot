@@ -375,7 +375,8 @@ async def _route_text(settings, offset: int, prefer: "str | None",
                       origin: "tuple | None" = None,
                       max_drive_km: "float | None" = None,
                       weight_kg: "float | None" = None,
-                      quiver: "list | None" = None) -> str:
+                      quiver: "list | None" = None,
+                      dry: bool = False) -> str:
     spots = config.load_spots(settings)
     results = await gather_results(spots, settings)
     tz = ZoneInfo(settings.timezone)
@@ -385,6 +386,9 @@ async def _route_text(settings, offset: int, prefer: "str | None",
     items = [(r.spot, w) for r in results for w in r.windows if w.start.date() == target]
     if offset == 0:
         items = [(spot, w2) for spot, w in items for w2 in clip_past([w], now)]
+    if dry:
+        day_lv += " bez lietus"
+        items = [(spot, w) for spot, w in items if dry_windows([w])]
     if not items:
         return f"🗺 {day_lv}: nevienā spotā nav braucama vēja — maršrutu nesanāk."
     depart = now if (offset == 0 and origin is not None) else None
@@ -474,18 +478,42 @@ def _parse_route_args(payload: str, settings) -> "tuple | None":
         return None
     pref_key = parts[1] if len(parts) > 1 else "a"
     dist_code = parts[2] if len(parts) > 2 else "0"
+    rain_code = parts[3] if len(parts) > 3 else "a"
     prefer = {"s": "strong", "l": "light"}.get(pref_key)
     max_drive = float(dist_code) if dist_code.isdigit() and dist_code != "0" else None
-    return offset, pref_key, prefer, dist_code, max_drive
+    return offset, pref_key, prefer, dist_code, max_drive, rain_code, rain_code == "d"
 
 
 async def _cb_route_dist(query, context, settings, payload: str) -> None:
-    """Step 3 → result (groups) or step 4 (DM: optional location)."""
+    """Step 3 → 4: distance picked, ask about rain."""
     parsed = _parse_route_args(payload, settings)
     if parsed is None:
         await query.answer()
         return
-    offset, pref_key, prefer, dist_code, max_drive = parsed
+    offset, pref_key, _, dist_code, _, _, _ = parsed
+    await query.answer()
+    day_lv = ROUTE_DAYS_LV[offset] if offset < len(ROUTE_DAYS_LV) else str(offset)
+    base = f"{offset}:{pref_key}:{dist_code}"
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("🌂 Tikai bez lietus", callback_data=f"router:{base}:d"),
+        InlineKeyboardButton("🤷 Vienalga", callback_data=f"router:{base}:a"),
+    ]])
+    try:
+        await query.edit_message_text(
+            f"🗺 {day_lv}, {ROUTE_PREFS_LV.get(pref_key, '')}, {_dist_label(dist_code)} — "
+            "vai rādīt tikai logus bez lietus?",
+            reply_markup=keyboard)
+    except BadRequest:
+        pass
+
+
+async def _cb_route_rain(query, context, settings, payload: str) -> None:
+    """Step 4 → result (groups) or step 5 (DM: optional location)."""
+    parsed = _parse_route_args(payload, settings)
+    if parsed is None:
+        await query.answer()
+        return
+    offset, pref_key, prefer, dist_code, max_drive, rain_code, dry = parsed
     m = query.message
     if m is None:
         await query.answer()
@@ -495,21 +523,23 @@ async def _cb_route_dist(query, context, settings, payload: str) -> None:
         user = query.from_user
         if user is not None:
             _pending_route[(m.chat.id, user.id)] = {
-                "offset": offset, "prefer": prefer, "max_drive": max_drive,
+                "offset": offset, "prefer": prefer, "max_drive": max_drive, "dry": dry,
                 "expires": datetime.now(timezone.utc) + LOCATION_WAIT,
             }
         day_lv = ROUTE_DAYS_LV[offset] if offset < len(ROUTE_DAYS_LV) else str(offset)
+        base = f"{offset}:{pref_key}:{dist_code}:{rain_code}"
         buttons = []
         if user is not None and config.get_profile(user.id).get("home"):
             buttons.append(InlineKeyboardButton(
-                "🏠 No manām mājām", callback_data=f"routeh:{offset}:{pref_key}:{dist_code}"))
+                "🏠 No manām mājām", callback_data=f"routeh:{base}"))
         buttons.append(InlineKeyboardButton(
-            "⏭️ Bez atrašanās vietas", callback_data=f"routego:{offset}:{pref_key}:{dist_code}"))
+            "⏭️ Bez atrašanās vietas", callback_data=f"routego:{base}"))
+        rain_lv = ", bez lietus" if dry else ""
         try:
             await query.edit_message_text(
-                f"🗺 {day_lv}, {ROUTE_PREFS_LV.get(pref_key, '')}, {_dist_label(dist_code)} — "
-                "atsūti savu atrašanās vietu (📎 → Location), lai ņemtu vērā braucienu "
-                "no tevis, vai izvēlies pogu.",
+                f"🗺 {day_lv}, {ROUTE_PREFS_LV.get(pref_key, '')}, "
+                f"{_dist_label(dist_code)}{rain_lv} — atsūti savu atrašanās vietu "
+                "(📎 → Location), lai ņemtu vērā braucienu no tevis, vai izvēlies pogu.",
                 reply_markup=InlineKeyboardMarkup([buttons]))
         except BadRequest:
             pass
@@ -522,7 +552,7 @@ async def _cb_route_dist(query, context, settings, payload: str) -> None:
         pass
     weight_kg, quiver = _profile_kite_args(query.from_user)
     text = await _route_text(settings, offset, prefer, max_drive_km=max_drive,
-                             weight_kg=weight_kg, quiver=quiver)
+                             weight_kg=weight_kg, quiver=quiver, dry=dry)
     try:
         await query.edit_message_text(text, parse_mode=ParseMode.HTML)
     except BadRequest:
@@ -535,7 +565,7 @@ async def _cb_route_go(query, context, settings, payload: str) -> None:
     if parsed is None:
         await query.answer()
         return
-    offset, _, prefer, _, max_drive = parsed
+    offset, _, prefer, _, max_drive, _, dry = parsed
     m = query.message
     user = query.from_user
     if m is not None and user is not None:
@@ -549,7 +579,7 @@ async def _cb_route_go(query, context, settings, payload: str) -> None:
         pass
     weight_kg, quiver = _profile_kite_args(user)
     text = await _route_text(settings, offset, prefer, max_drive_km=max_drive,
-                             weight_kg=weight_kg, quiver=quiver)
+                             weight_kg=weight_kg, quiver=quiver, dry=dry)
     try:
         await query.edit_message_text(text, parse_mode=ParseMode.HTML,
                                       reply_markup=_route_share_keyboard(text))
@@ -563,7 +593,7 @@ async def _cb_route_home(query, context, settings, payload: str) -> None:
     if parsed is None:
         await query.answer()
         return
-    offset, _, prefer, _, max_drive = parsed
+    offset, _, prefer, _, max_drive, _, dry = parsed
     m = query.message
     user = query.from_user
     home = config.get_profile(user.id).get("home") if user is not None else None
@@ -582,7 +612,7 @@ async def _cb_route_home(query, context, settings, payload: str) -> None:
     weight_kg, quiver = _profile_kite_args(user)
     text = await _route_text(settings, offset, prefer,
                              origin=(home["lat"], home["lon"]), max_drive_km=max_drive,
-                             weight_kg=weight_kg, quiver=quiver)
+                             weight_kg=weight_kg, quiver=quiver, dry=dry)
     try:
         await query.edit_message_text(text, parse_mode=ParseMode.HTML,
                                       reply_markup=_route_share_keyboard(text))
@@ -792,7 +822,8 @@ async def on_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         text = await _route_text(settings, route_pending["offset"],
                                  route_pending["prefer"], origin=origin,
                                  max_drive_km=route_pending.get("max_drive"),
-                                 weight_kg=weight_kg, quiver=quiver)
+                                 weight_kg=weight_kg, quiver=quiver,
+                                 dry=route_pending.get("dry", False))
         keyboard = _route_share_keyboard(text) if msg.chat.type == ChatType.PRIVATE else None
         await msg.reply_html(text, reply_markup=keyboard)
         return
@@ -919,6 +950,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await _cb_route_wind(query, context, settings, data[len("routew:"):])
     elif data.startswith("routed:"):
         await _cb_route_dist(query, context, settings, data[len("routed:"):])
+    elif data.startswith("router:"):
+        await _cb_route_rain(query, context, settings, data[len("router:"):])
     elif data.startswith("routego:"):
         await _cb_route_go(query, context, settings, data[len("routego:"):])
     elif data.startswith("routeh:"):
