@@ -524,6 +524,7 @@ async def _cb_route_rain(query, context, settings, payload: str) -> None:
         if user is not None:
             _pending_route[(m.chat.id, user.id)] = {
                 "offset": offset, "prefer": prefer, "max_drive": max_drive, "dry": dry,
+                "codes": (pref_key, dist_code, rain_code),
                 "expires": datetime.now(timezone.utc) + LOCATION_WAIT,
             }
         day_lv = ROUTE_DAYS_LV[offset] if offset < len(ROUTE_DAYS_LV) else str(offset)
@@ -553,8 +554,10 @@ async def _cb_route_rain(query, context, settings, payload: str) -> None:
     weight_kg, quiver = _profile_kite_args(query.from_user)
     text = await _route_text(settings, offset, prefer, max_drive_km=max_drive,
                              weight_kg=weight_kg, quiver=quiver, dry=dry)
+    markup = _route_result_markup(
+        None, f"router:{offset}:{pref_key}:{{dist}}:{rain_code}", dist_code)
     try:
-        await query.edit_message_text(text, parse_mode=ParseMode.HTML)
+        await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
     except BadRequest:
         pass
 
@@ -565,7 +568,7 @@ async def _cb_route_go(query, context, settings, payload: str) -> None:
     if parsed is None:
         await query.answer()
         return
-    offset, _, prefer, _, max_drive, _, dry = parsed
+    offset, pref_key, prefer, dist_code, max_drive, rain_code, dry = parsed
     m = query.message
     user = query.from_user
     if m is not None and user is not None:
@@ -580,9 +583,10 @@ async def _cb_route_go(query, context, settings, payload: str) -> None:
     weight_kg, quiver = _profile_kite_args(user)
     text = await _route_text(settings, offset, prefer, max_drive_km=max_drive,
                              weight_kg=weight_kg, quiver=quiver, dry=dry)
+    markup = _route_result_markup(
+        text, f"routego:{offset}:{pref_key}:{{dist}}:{rain_code}", dist_code)
     try:
-        await query.edit_message_text(text, parse_mode=ParseMode.HTML,
-                                      reply_markup=_route_share_keyboard(text))
+        await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
     except BadRequest:
         pass
 
@@ -593,7 +597,7 @@ async def _cb_route_home(query, context, settings, payload: str) -> None:
     if parsed is None:
         await query.answer()
         return
-    offset, _, prefer, _, max_drive, _, dry = parsed
+    offset, pref_key, prefer, dist_code, max_drive, rain_code, dry = parsed
     m = query.message
     user = query.from_user
     home = config.get_profile(user.id).get("home") if user is not None else None
@@ -613,22 +617,77 @@ async def _cb_route_home(query, context, settings, payload: str) -> None:
     text = await _route_text(settings, offset, prefer,
                              origin=(home["lat"], home["lon"]), max_drive_km=max_drive,
                              weight_kg=weight_kg, quiver=quiver, dry=dry)
+    markup = _route_result_markup(
+        text, f"routeh:{offset}:{pref_key}:{{dist}}:{rain_code}", dist_code)
     try:
-        await query.edit_message_text(text, parse_mode=ParseMode.HTML,
-                                      reply_markup=_route_share_keyboard(text))
+        await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
     except BadRequest:
         pass
 
 
-def _route_share_keyboard(text: str) -> "InlineKeyboardMarkup | None":
-    """A 'send to group' button for DM results, when a group is subscribed."""
+async def _cb_route_loc(query, context, settings, payload: str) -> None:
+    """Re-plan with a different distance, keeping a previously shared location
+    (its coordinates ride along in the callback data)."""
+    parts = payload.split(":")
+    if len(parts) < 6:
+        await query.answer()
+        return
+    parsed = _parse_route_args(":".join(parts[:4]), settings)
+    if parsed is None:
+        await query.answer()
+        return
+    offset, pref_key, prefer, dist_code, max_drive, rain_code, dry = parsed
+    try:
+        origin = (float(parts[4]), float(parts[5]))
+    except ValueError:
+        await query.answer()
+        return
+    m = query.message
+    await query.answer("Plānoju maršrutu…")
+    if m is None:
+        return
+    try:
+        await query.edit_message_text("⏳ Plānoju maršrutu…")
+    except BadRequest:
+        pass
+    weight_kg, quiver = _profile_kite_args(query.from_user)
+    text = await _route_text(settings, offset, prefer, origin=origin,
+                             max_drive_km=max_drive, weight_kg=weight_kg,
+                             quiver=quiver, dry=dry)
+    share_text = text if m.chat.type == ChatType.PRIVATE else None
+    markup = _route_result_markup(
+        share_text, f"routel:{offset}:{pref_key}:{{dist}}:{rain_code}:{parts[4]}:{parts[5]}",
+        dist_code)
+    try:
+        await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+    except BadRequest:
+        pass
+
+
+def _share_row(text: str) -> "list | None":
+    """A 'send to group' button row for DM results, when a group is subscribed."""
     if not any(s.chat_id < 0 for s in config.load_subscriptions()):
         return None
     token = secrets.token_hex(4)
     _route_share[token] = text
-    return InlineKeyboardMarkup([[
-        InlineKeyboardButton("📤 Nosūtīt grupai", callback_data=f"rshare:{token}"),
-    ]])
+    return [InlineKeyboardButton("📤 Nosūtīt grupai", callback_data=f"rshare:{token}")]
+
+
+def _route_result_markup(share_text: "str | None", retry_fmt: "str | None",
+                         current_dist: str) -> "InlineKeyboardMarkup | None":
+    """Keyboard under a route result: optional share button plus 'replan with a
+    different distance' buttons ({dist} in retry_fmt is filled per option)."""
+    rows = []
+    if share_text is not None:
+        share = _share_row(share_text)
+        if share:
+            rows.append(share)
+    if retry_fmt:
+        retry = [InlineKeyboardButton(f"🚗 {label}", callback_data=retry_fmt.format(dist=code))
+                 for code, label in ROUTE_DISTS if code != current_dist]
+        if retry:
+            rows.append(retry)
+    return InlineKeyboardMarkup(rows) if rows else None
 
 
 async def _cb_route_share(query, context, settings, token: str) -> None:
@@ -824,8 +883,12 @@ async def on_location(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                                  max_drive_km=route_pending.get("max_drive"),
                                  weight_kg=weight_kg, quiver=quiver,
                                  dry=route_pending.get("dry", False))
-        keyboard = _route_share_keyboard(text) if msg.chat.type == ChatType.PRIVATE else None
-        await msg.reply_html(text, reply_markup=keyboard)
+        pref_key, dist_code, rain_code = route_pending.get("codes", ("a", "0", "a"))
+        retry_fmt = (f"routel:{route_pending['offset']}:{pref_key}:{{dist}}:{rain_code}:"
+                     f"{origin[0]:.4f}:{origin[1]:.4f}")
+        share_text = text if msg.chat.type == ChatType.PRIVATE else None
+        await msg.reply_html(text, reply_markup=_route_result_markup(
+            share_text, retry_fmt, dist_code))
         return
     home_pending = _pending_home.pop((msg.chat_id, user.id), None)
     if home_pending is not None:
@@ -956,6 +1019,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await _cb_route_go(query, context, settings, data[len("routego:"):])
     elif data.startswith("routeh:"):
         await _cb_route_home(query, context, settings, data[len("routeh:"):])
+    elif data.startswith("routel:"):
+        await _cb_route_loc(query, context, settings, data[len("routel:"):])
     elif data.startswith("rshare:"):
         await _cb_route_share(query, context, settings, data[len("rshare:"):])
     else:
