@@ -87,7 +87,7 @@ Work the same in groups and in private chats.
 | Command | What it does |
 | --- | --- |
 | `/prognoze` | Forecast for all spots — a pure planning view |
-| `/marsruts` | Day-route planner: a button wizard (day → wind preference: stronger/lighter/any → max total driving distance) that keeps editing one message, then becomes the route. In a DM you can also share your location so the plan accounts for the drive from you (and clips today's windows to your arrival); the DM result has a "📤 Nosūtīt grupai" button |
+| `/marsruts` | Day-route planner: a button wizard (day → wind preference: stronger/lighter/any → max total driving distance → dry-only or any rain) that keeps editing one message, then becomes the route. In a DM you can also share your location so the plan accounts for the drive from you (and clips today's windows to your arrival); the DM result has a "📤 Nosūtīt grupai" button |
 | `/home`, `/quiver 12 9 7`, `/weight 85`, `/profile` | Personal profile: saved home location (offered as a "🏠 No manām mājām" button in the route wizard), kite sizes and weight — with quiver+weight set, routes recommend which kites to take (size ≈ 2.2 × kg / kn) |
 | `/menu` (or `/start`) | Buttons: check all spots or a single one with one tap |
 | `/check [spot]` | Forecast check as a text command |
