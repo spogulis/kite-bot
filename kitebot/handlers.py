@@ -20,7 +20,7 @@ from telegram.ext import (
 )
 
 from . import config, routes, surfr, woo
-from .analysis import dry_windows, sectors_from_toggles, toggles_from_sectors
+from .analysis import clip_past, dry_windows, sectors_from_toggles, toggles_from_sectors
 from .checker import gather_results
 from .config import Spot, Subscription
 from .messages import (
@@ -256,6 +256,9 @@ async def _run_check(context: ContextTypes.DEFAULT_TYPE, chat_id: int, thread_id
     except TelegramError:
         pass
     results = await gather_results(spots, settings)
+    now = datetime.now(timezone.utc)
+    results = [SpotResult(spot=r.spot, windows=clip_past(r.windows, now), error=r.error)
+               for r in results]
     title = "Kaita prognoze"
     if dry:
         results = [SpotResult(spot=r.spot, windows=dry_windows(r.windows), error=r.error)
@@ -380,6 +383,8 @@ async def _route_text(settings, offset: int, prefer: "str | None",
     target = (now + timedelta(days=offset)).date()
     day_lv = ROUTE_DAYS_LV[offset] if offset < len(ROUTE_DAYS_LV) else target.isoformat()
     items = [(r.spot, w) for r in results for w in r.windows if w.start.date() == target]
+    if offset == 0:
+        items = [(spot, w2) for spot, w in items for w2 in clip_past([w], now)]
     if not items:
         return f"🗺 {day_lv}: nevienā spotā nav braucama vēja — maršrutu nesanāk."
     depart = now if (offset == 0 and origin is not None) else None
