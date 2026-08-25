@@ -217,11 +217,21 @@ def test_summarize_merged_rider_reconciles_apps():
     lines, updated, changed = summarize(riders, stats)
     assert len(lines) == 1
     # best of each metric, both jump readings shown, record from the max
-    assert "30,0 km" in lines[0]
-    assert "lēciens 14,2 m (WOO 14,2 / Surfr 13,1)" in lines[0]
-    assert "lēciena garums 31,0 m" in lines[0]
+    assert "🛣️ 30,0 km" in lines[0]
+    assert "⬆️ 14,2 m (WOO 14,2 / Surfr 13,1)" in lines[0]
+    assert "↔️ 31,0 m" in lines[0]
     assert "JAUNS REKORDS (+0,6 m)" in lines[0]
     assert changed and updated[0]["record_height_m"] == 14.2
+
+
+def test_summarize_orders_metrics_height_then_jump_then_ridden():
+    from kitebot.woo import summarize
+    riders = [{"name": "Alfa", "record_height_m": 20.0,
+               "ids": {"woo": "w", "surfr": "s"}}]
+    stats = {"woo:w": {"distance_m": 16100}, "surfr:s": {"jump_distance_m": 30.0,
+                                                        "height_m": 4.7}}
+    lines, _, _ = summarize(riders, stats)
+    assert lines[0] == "🏄 Alfa — ⬆️ 4,7 m · ↔️ 30,0 m · 🛣️ 16,1 km"
 
 
 def test_summarize_surfr_jump_distance_is_not_km():
@@ -233,7 +243,7 @@ def test_summarize_surfr_jump_distance_is_not_km():
     lines, _, changed = summarize(riders, stats)
     assert not changed
     assert "km" not in lines[0]
-    assert "lēciens 2,4 m" in lines[0] and "lēciena garums 30,0 m" in lines[0]
+    assert "⬆️ 2,4 m" in lines[0] and "↔️ 30,0 m" in lines[0]
 
 
 def test_digest_collapses_when_nothing_rideable():
