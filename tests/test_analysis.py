@@ -212,15 +212,28 @@ def test_summarize_merged_rider_reconciles_apps():
                "ids": {"woo": "uuid-1", "surfr": "54321"}}]
     stats = {
         "woo:uuid-1": {"distance_m": 30000, "height_m": 14.2},
-        "surfr:54321": {"distance_m": 31000, "height_m": 13.1},
+        "surfr:54321": {"jump_distance_m": 31.0, "height_m": 13.1},
     }
     lines, updated, changed = summarize(riders, stats)
     assert len(lines) == 1
     # best of each metric, both jump readings shown, record from the max
-    assert "31,0 km" in lines[0]
+    assert "30,0 km" in lines[0]
     assert "lēciens 14,2 m (WOO 14,2 / Surfr 13,1)" in lines[0]
+    assert "lēciena garums 31,0 m" in lines[0]
     assert "JAUNS REKORDS (+0,6 m)" in lines[0]
     assert changed and updated[0]["record_height_m"] == 14.2
+
+
+def test_summarize_surfr_jump_distance_is_not_km():
+    """Surfr's 'distance' leaderboard is the longest jump in metres; a 30 m
+    jump must not surface as 30 km ridden."""
+    from kitebot.woo import summarize
+    riders = [{"name": "Kristina", "record_height_m": 3.0, "ids": {"surfr": "9"}}]
+    stats = {"surfr:9": {"jump_distance_m": 30.0, "height_m": 2.4}}
+    lines, _, changed = summarize(riders, stats)
+    assert not changed
+    assert "km" not in lines[0]
+    assert "lēciens 2,4 m" in lines[0] and "lēciena garums 30,0 m" in lines[0]
 
 
 def test_digest_collapses_when_nothing_rideable():

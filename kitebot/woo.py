@@ -132,7 +132,9 @@ def summarize(riders: list, stats: dict) -> tuple:
     riders: [{"name", "record_height_m", "ids": {provider: id}}]; stats: merged
     day_stats() results keyed "provider:rider_id". A person tracked by both
     apps gets one line — the best value counts, and when the apps disagree on
-    the jump by 0.3 m or more, both readings are shown.
+    the jump by 0.3 m or more, both readings are shown. Only WOO reports
+    distance ridden and only Surfr reports jump distance, so those two parts
+    come from whichever app has them.
     Returns (lines, updated_riders, records_changed).
     """
     def num(value: float) -> str:
@@ -164,6 +166,9 @@ def summarize(riders: list, stats: dict) -> tuple:
                         for p, h in sorted(heights.items(), key=lambda kv: -kv[1]))
                     text += f" ({both})"
                 parts.append(text)
+            jump_distance = max((d.get("jump_distance_m") or 0) for d in sources.values())
+            if jump_distance:
+                parts.append(f"lēciena garums {num(jump_distance)} m")
             record = float(rider.get("record_height_m") or 0)
             if height > record:
                 # Telegram offers no colored text; the red marker + caps is
