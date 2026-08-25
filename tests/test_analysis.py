@@ -234,6 +234,27 @@ def test_summarize_orders_metrics_height_then_jump_then_ridden():
     assert lines[0] == "🏄 Alfa — ⬆️ 4,7 m · ↔️ 30,0 m · 🛣️ 16,1 km"
 
 
+def test_summarize_ranks_lines_by_jump_height():
+    """Config order must not leak into the section: highest jump leads, and a
+    rider with no jump reading sinks below everyone who has one."""
+    from kitebot.woo import summarize
+    riders = [
+        {"name": "Zems", "record_height_m": 9.9, "ids": {"woo": "a"}},
+        {"name": "Bezleciena", "record_height_m": 9.9, "ids": {"woo": "b"}},
+        {"name": "Augsts", "record_height_m": 9.9, "ids": {"woo": "c"}},
+    ]
+    stats = {
+        "woo:a": {"distance_m": 40000, "height_m": 4.7},
+        "woo:b": {"distance_m": 99000},  # rode far, but no jump recorded
+        "woo:c": {"distance_m": 1000, "height_m": 11.7},
+    }
+    lines, updated, _ = summarize(riders, stats)
+    assert [line.split(" — ")[0] for line in lines] == [
+        "🏄 Augsts", "🏄 Zems", "🏄 Bezleciena"]
+    # records are written back in config order regardless of how lines rank
+    assert [r["name"] for r in updated] == ["Zems", "Bezleciena", "Augsts"]
+
+
 def test_summarize_surfr_jump_distance_is_not_km():
     """Surfr's 'distance' leaderboard is the longest jump in metres; a 30 m
     jump must not surface as 30 km ridden."""

@@ -176,7 +176,8 @@ Each metric is marked with an icon instead of a word, always in this order:
 
 ⬆️ jump height · ↔️ jump distance · 🛣️ distance ridden. A rider shows only the
 metrics their app reports, so Surfr-only riders have no 🛣️ and WOO-only riders
-have no ↔️.
+have no ↔️. Riders are ranked by jump height, highest first; anyone whose app
+logged no jump is listed last.
 
 Admins add riders with `/woorider <name>` (WOO, searches the last 30 days) or
 `/surfrider <name>` (Surfr, searches this week then this month) and pick from
