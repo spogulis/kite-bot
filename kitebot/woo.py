@@ -144,12 +144,16 @@ def summarize(riders: list, stats: dict) -> tuple:
     distance ridden and only Surfr reports jump distance, so those two parts
     come from whichever app has them. Metrics are marked with icons rather
     than named, always in the order height, jump distance, distance ridden.
+    Lines are ranked by jump height, highest first, so the section reads as a
+    leaderboard; riders whose app reported no jump sink to the bottom in the
+    order they are configured. updated_riders keeps the input order, since it
+    is written straight back to riders.json.
     Returns (lines, updated_riders, records_changed).
     """
     def num(value: float) -> str:
         return f"{value:.1f}".replace(".", ",")
 
-    lines: list = []
+    ranked: list = []
     updated: list = []
     changed = False
     for rider in riders:
@@ -189,6 +193,7 @@ def summarize(riders: list, stats: dict) -> tuple:
                 entry["record_height_m"] = height
                 changed = True
             if parts:
-                lines.append(f"🏄 {rider.get('name', '?')} — " + " · ".join(parts))
+                ranked.append((height, f"🏄 {rider.get('name', '?')} — " + " · ".join(parts)))
         updated.append(entry)
-    return lines, updated, changed
+    ranked.sort(key=lambda pair: -pair[0])  # stable, so ties keep config order
+    return [line for _, line in ranked], updated, changed
