@@ -125,6 +125,14 @@ async def find_riders(token: str, query: str, start: int, end: int, limit: int =
 
 PROVIDER_LABELS = {"woo": "WOO", "surfr": "Surfr"}
 
+# Recap metric markers. The three are easy to confuse once the words are gone,
+# so they read as directions: up for how high, sideways for how far the jump
+# carried, a road for the distance ridden over the whole session. Units
+# disambiguate too — only the ridden distance is in km.
+HEIGHT_ICON = "⬆️"
+JUMP_DISTANCE_ICON = "↔️"
+RIDDEN_ICON = "🛣️"
+
 
 def summarize(riders: list, stats: dict) -> tuple:
     """Latvian recap lines for riders who rode, plus riders with updated records.
@@ -134,7 +142,8 @@ def summarize(riders: list, stats: dict) -> tuple:
     apps gets one line — the best value counts, and when the apps disagree on
     the jump by 0.3 m or more, both readings are shown. Only WOO reports
     distance ridden and only Surfr reports jump distance, so those two parts
-    come from whichever app has them.
+    come from whichever app has them. Metrics are marked with icons rather
+    than named, always in the order height, jump distance, distance ridden.
     Returns (lines, updated_riders, records_changed).
     """
     def num(value: float) -> str:
@@ -153,13 +162,10 @@ def summarize(riders: list, stats: dict) -> tuple:
                 sources[provider] = day
         if sources:
             parts = []
-            distance = max((d.get("distance_m") or 0) for d in sources.values())
-            if distance:
-                parts.append(f"{num(distance / 1000)} km")
             heights = {p: d["height_m"] for p, d in sources.items() if d.get("height_m")}
             height = max(heights.values()) if heights else 0
             if height:
-                text = f"lēciens {num(height)} m"
+                text = f"{HEIGHT_ICON} {num(height)} m"
                 if len(heights) > 1 and max(heights.values()) - min(heights.values()) >= 0.3:
                     both = " / ".join(
                         f"{PROVIDER_LABELS.get(p, p)} {num(h)}"
@@ -168,7 +174,10 @@ def summarize(riders: list, stats: dict) -> tuple:
                 parts.append(text)
             jump_distance = max((d.get("jump_distance_m") or 0) for d in sources.values())
             if jump_distance:
-                parts.append(f"lēciena garums {num(jump_distance)} m")
+                parts.append(f"{JUMP_DISTANCE_ICON} {num(jump_distance)} m")
+            distance = max((d.get("distance_m") or 0) for d in sources.values())
+            if distance:
+                parts.append(f"{RIDDEN_ICON} {num(distance / 1000)} km")
             record = float(rider.get("record_height_m") or 0)
             if height > record:
                 # Telegram offers no colored text; the red marker + caps is

@@ -166,8 +166,19 @@ best jump for tracked riders, plus distance ridden (WOO only) and longest jump
 session totals), pulled from the WOO Sports and Surfr public leaderboards (the
 same unofficial APIs their leaderboard
 sites use — best-effort: if a provider changes or blocks its API, its riders
-silently drop out of the section and the forecast still posts). Admins add
-riders with `/woorider <name>` (WOO, searches the last 30 days) or
+silently drop out of the section and the forecast still posts).
+
+Each metric is marked with an icon instead of a word, always in this order:
+
+```
+🏄 Kristaps Liepiņš — ⬆️ 11,7 m · ↔️ 30,0 m · 🛣️ 22,1 km
+```
+
+⬆️ jump height · ↔️ jump distance · 🛣️ distance ridden. A rider shows only the
+metrics their app reports, so Surfr-only riders have no 🛣️ and WOO-only riders
+have no ↔️.
+
+Admins add riders with `/woorider <name>` (WOO, searches the last 30 days) or
 `/surfrider <name>` (Surfr, searches this week then this month) and pick from
 button choices; `/riders` lists and removes them, and its 🔗 button merges two
 entries that are the same person on both apps — merged riders get one recap
