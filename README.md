@@ -161,8 +161,10 @@ offshore.
 ## Rider recap (WOO Sports & Surfr)
 
 The daily digest can include a "Vakardienas varoņi" section with yesterday's
-ridden distance and best jump for tracked riders, pulled from the WOO Sports
-and Surfr public leaderboards (the same unofficial APIs their leaderboard
+best jump for tracked riders, plus distance ridden (WOO only) and longest jump
+(Surfr only — its leaderboards are all per-jump bests and it publishes no
+session totals), pulled from the WOO Sports and Surfr public leaderboards (the
+same unofficial APIs their leaderboard
 sites use — best-effort: if a provider changes or blocks its API, its riders
 silently drop out of the section and the forecast still posts). Admins add
 riders with `/woorider <name>` (WOO, searches the last 30 days) or

@@ -3,8 +3,9 @@
 Uses the same backend the community leaderboard site
 (https://surfr-leaderboard.vercel.app) calls, with its public access token.
 Entries are per-session, sorted by value, with user id/name/country, spot and
-local timestamp. Categories: height (m), airtime, distance (km), speed.
-Undocumented API — treat every call as best-effort.
+local timestamp. All four categories are per-jump bests, not session totals:
+height (m), airtime (s), distance (m — the longest jump, not the distance
+ridden), speed (km/h). Undocumented API — treat every call as best-effort.
 """
 from __future__ import annotations
 
@@ -74,25 +75,27 @@ def _item_user(item: dict) -> tuple:
 
 
 async def day_stats(token: str, date_str: str, rider_ids: set) -> dict:
-    """{rider_id: {"distance_m": float, "height_m": float}} for one local date.
+    """{rider_id: {"jump_distance_m": float, "height_m": float}} for one local date.
 
-    Entries are per-session; a rider's best session value wins.
+    Entries are per-session; a rider's best session value wins. Note there is no
+    ridden distance here: Surfr's "distance" leaderboard is the longest single
+    jump in metres, and its API exposes no session totals.
     """
     stats: dict = {}
 
-    def collect(field, factor):
+    def collect(field):
         def on_item(item):
             rider_id, _ = _item_user(item)
             if rider_id in rider_ids:
-                value = float(item.get("value") or 0) * factor
+                value = float(item.get("value") or 0)
                 entry = stats.setdefault(rider_id, {})
                 entry[field] = max(entry.get(field, 0), value)
         return on_item
 
     async with httpx.AsyncClient() as client:
-        await _scan(client, token, "distance", "custom", collect("distance_m", 1000.0),
-                    MAX_DAY_PAGES, date_str, date_str)  # value is km
-        await _scan(client, token, "height", "custom", collect("height_m", 1.0),
+        await _scan(client, token, "distance", "custom", collect("jump_distance_m"),
+                    MAX_DAY_PAGES, date_str, date_str)
+        await _scan(client, token, "height", "custom", collect("height_m"),
                     MAX_DAY_PAGES, date_str, date_str)
     return stats
 
