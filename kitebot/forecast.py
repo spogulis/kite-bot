@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -31,6 +32,16 @@ log = logging.getLogger(__name__)
 
 class ForecastError(Exception):
     pass
+
+
+def _jittered(seconds: float) -> float:
+    """Spread the retry so spots that failed together do not retry together.
+
+    Staggered launches already separate the first attempts; this keeps them
+    separated after a shared outage, when every spot would otherwise wake on
+    the same fixed delay.
+    """
+    return seconds * random.uniform(0.75, 1.25)
 
 
 async def fetch_hours(client: httpx.AsyncClient, spot, days: int, unit: str = "ms",
@@ -60,7 +71,7 @@ async def fetch_hours(client: httpx.AsyncClient, spot, days: int, unit: str = "m
             log.warning("Open-Meteo attempt %d/%d failed for %.3f,%.3f: %s",
                         attempt + 1, attempts, spot.lat, spot.lon, exc)
             if attempt < attempts - 1:
-                await asyncio.sleep(delays[attempt])
+                await asyncio.sleep(_jittered(delays[attempt]))
     if data is None:
         raise ForecastError(f"Open-Meteo request failed after {attempts} attempts: {last_exc}") from last_exc
 

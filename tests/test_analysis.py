@@ -550,3 +550,71 @@ def test_normalize_wind_unit():
     assert normalize_wind_unit("km/h") == "kmh"
     with pytest.raises(SystemExit):
         normalize_wind_unit("banana")
+
+
+def test_spot_requests_are_staggered_not_simultaneous():
+    """All spots used to hit Open-Meteo inside the same 100 ms and get 429/503."""
+    import asyncio
+
+    from kitebot import checker
+    from kitebot.config import Settings
+
+    starts: list = []
+
+    async def fake_fetch(client, spot, days, unit, model="best_match", delays=()):
+        starts.append(asyncio.get_running_loop().time())
+        return []
+
+    async def run():
+        spots = [Spot(name=f"S{i}", lat=1.0, lon=2.0) for i in range(5)]
+        return await checker.gather_results(spots, Settings(), stagger=0.02)
+
+    original = checker.fetch_hours
+    checker.fetch_hours = fake_fetch
+    try:
+        results = asyncio.run(run())
+    finally:
+        checker.fetch_hours = original
+
+    assert len(results) == 5
+    assert [r.spot.name for r in results] == [f"S{i}" for i in range(5)]
+    # asserted on the total spread, not pairwise gaps: a loaded machine can
+    # oversleep one launch and borrow the time from the next gap
+    assert starts[-1] - starts[0] >= 0.02 * 4
+
+
+def test_zero_stagger_keeps_requests_concurrent():
+    import asyncio
+
+    from kitebot import checker
+    from kitebot.config import Settings
+
+    running = concurrent = 0
+
+    async def fake_fetch(client, spot, days, unit, model="best_match", delays=()):
+        nonlocal running, concurrent
+        running += 1
+        concurrent = max(concurrent, running)
+        await asyncio.sleep(0.01)
+        running -= 1
+        return []
+
+    async def run():
+        spots = [Spot(name=f"S{i}", lat=1.0, lon=2.0) for i in range(4)]
+        return await checker.gather_results(spots, Settings(), stagger=0)
+
+    original = checker.fetch_hours
+    checker.fetch_hours = fake_fetch
+    try:
+        asyncio.run(run())
+    finally:
+        checker.fetch_hours = original
+    assert concurrent == 4
+
+
+def test_retry_delay_is_jittered():
+    from kitebot.forecast import ROBUST_DELAYS, _jittered
+    base = ROBUST_DELAYS[0]
+    samples = {_jittered(base) for _ in range(50)}
+    assert len(samples) > 1                      # not a fixed delay any more
+    assert all(0.75 * base <= s <= 1.25 * base for s in samples)
