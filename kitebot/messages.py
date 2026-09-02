@@ -8,7 +8,7 @@ import html
 import re
 from dataclasses import dataclass, field
 
-from .analysis import DIRECTION_SECTORS, Window, toggles_from_sectors
+from .analysis import DIRECTION_SECTORS, Window
 from .config import UNIT_LABELS, Settings, Spot
 
 TELEGRAM_LIMIT = 4000  # hard limit is 4096; keep headroom
@@ -74,13 +74,23 @@ def format_window(w: Window, label: str) -> str:
 
 
 def describe_directions(sectors: list) -> str:
+    """Name each sector that is a plain octant, spell out the rest in degrees.
+
+    Mixing the two matters for hand-tuned spots: a spot allowing north, east and
+    a narrowed 265°–293° west reads as "Ziemeļi, Austrumi, 265°–293°" rather
+    than dropping every name the moment one sector is custom.
+    """
     if not sectors:
         return "jebkurš virziens"
     blocks = [list(b) for b in DIRECTION_SECTORS]
-    if all(list(s) in blocks for s in sectors):
-        toggles = toggles_from_sectors(sectors)
-        return ", ".join(DIRECTION_LABELS_LV[i] for i, on in enumerate(toggles) if on)
-    return ", ".join(f"{round(lo)}°–{round(hi)}°" for lo, hi in sectors)
+    parts = []
+    for sector in sectors:
+        sector = list(sector)
+        if sector in blocks:
+            parts.append(DIRECTION_LABELS_LV[blocks.index(sector)])
+        else:
+            parts.append(f"{round(sector[0])}°–{round(sector[1])}°")
+    return ", ".join(parts)
 
 
 def describe_spot(spot: Spot, label: str) -> str:

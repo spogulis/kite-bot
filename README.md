@@ -158,6 +158,22 @@ Wind directions are where the wind blows *from*: `0` = N, `90` = E, `180` = S,
 `270` = W. A typical safe setup allows onshore/side-shore sectors and excludes
 offshore.
 
+**Sectors narrower than an octant survive the buttons.** The `/manage` 🧭
+toggles work in 45° octants, but a spot may need a tighter bound — a
+north-facing beach that allows west should often stop at `[265, 292.5]`,
+because the octant's lower edge of 247.5° is already side-offshore and would
+drift a rider away from shore. Hand-edit `good_directions` to that and the
+toggles keep it: editing another direction no longer widens it back, and the
+button shows `Rietumi 265°–292°` so the narrowing is visible. Switching that
+direction off and on again is treated as a deliberate reset and restores the
+full octant.
+
+⚠️ `cell_selection: sea` picks the nearest *water* grid cell, which on a coarse
+model can be far offshore — with `gfs` it lands 12 km out for some Gulf of Riga
+spots, reading ~1 m/s too strong and turning a marginal day into a false
+window. Compare against `nearest` when a spot's forecast disagrees with
+Windguru.
+
 ## Rider recap (WOO Sports & Surfr)
 
 The daily digest can include a "Vakardienas varoņi" section with yesterday's
