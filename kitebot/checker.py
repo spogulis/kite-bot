@@ -20,14 +20,24 @@ from .messages import SpotResult
 
 log = logging.getLogger(__name__)
 
+# Open-Meteo answers 429/503 when every spot asks at once — the daily job used
+# to fire all of them inside the same 100 ms and regularly lost the first
+# attempt for half the spots. Spacing the launches keeps the burst under the
+# rate limit, and because each spot's retry clock starts from its own launch it
+# spreads the retries out too, instead of colliding again one delay later.
+REQUEST_STAGGER_S = 0.25
 
-async def gather_results(spots: list, settings: Settings, robust: bool = False) -> list:
+
+async def gather_results(spots: list, settings: Settings, robust: bool = False,
+                         stagger: float = REQUEST_STAGGER_S) -> list:
     """robust=True (the scheduled daily job) waits out long provider hiccups;
     interactive commands use quick retries plus the fallback provider."""
     delays = ROBUST_DELAYS if robust else INTERACTIVE_DELAYS
     async with httpx.AsyncClient() as client:
 
-        async def check(spot) -> SpotResult:
+        async def check(index: int, spot) -> SpotResult:
+            if stagger:
+                await asyncio.sleep(index * stagger)
             model = spot.model or settings.default_model
             try:
                 points = await fetch_hours(client, spot, settings.forecast_days,
@@ -51,4 +61,4 @@ async def gather_results(spots: list, settings: Settings, robust: bool = False) 
             )
             return SpotResult(spot=spot, windows=windows)
 
-        return list(await asyncio.gather(*(check(s) for s in spots)))
+        return list(await asyncio.gather(*(check(i, s) for i, s in enumerate(spots))))
