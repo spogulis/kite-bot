@@ -20,7 +20,9 @@ from telegram.ext import (
 )
 
 from . import config, routes, surfr, woo
-from .analysis import clip_past, dry_windows, sectors_from_toggles, toggles_from_sectors
+from .analysis import (
+    clip_past, dry_windows, narrowed_bounds, sectors_from_toggles, toggles_from_sectors,
+)
 from .checker import gather_results
 from .config import Spot, Subscription
 from .messages import (
@@ -227,7 +229,11 @@ def _dir_keyboard(spot: Spot) -> InlineKeyboardMarkup:
     row: list = []
     for i, label in enumerate(DIRECTION_LABELS_LV):
         mark = "✅ " if toggles[i] else ""
-        row.append(InlineKeyboardButton(mark + label, callback_data=f"dir:{spot.name}:{i}"))
+        bounds = narrowed_bounds(i, spot.good_directions) if toggles[i] else None
+        text = mark + label
+        if bounds:
+            text += f" {round(bounds[0])}°–{round(bounds[1])}°"
+        row.append(InlineKeyboardButton(text, callback_data=f"dir:{spot.name}:{i}"))
         if len(row) == 2:
             rows.append(row)
             row = []
@@ -1151,7 +1157,7 @@ async def _cb_dir_toggle(query, context, settings, payload: str) -> None:
             return
         toggles = toggles_from_sectors(spot.good_directions)
         toggles[index % 8] = not toggles[index % 8]
-        spot.good_directions = sectors_from_toggles(toggles)
+        spot.good_directions = sectors_from_toggles(toggles, spot.good_directions)
     config.save_spots(spots)
     await query.answer()
     try:

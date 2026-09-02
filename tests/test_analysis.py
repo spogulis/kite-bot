@@ -143,6 +143,53 @@ def test_direction_toggle_roundtrip():
     assert toggles_from_sectors(sectors) == toggles
 
 
+def test_toggling_one_direction_keeps_another_narrowed_sector():
+    """A hand-tuned sector must survive editing an unrelated direction.
+
+    36. līnija faces north, so its west sector is cut to 265°–292.5° to keep
+    side-offshore wind out. Toggling north off used to rebuild every sector
+    from the full octants and silently widen west back to 247.5°.
+    """
+    from kitebot.analysis import sectors_from_toggles, toggles_from_sectors
+    current = [[337.5, 22.5], [22.5, 67.5], [265.0, 292.5]]
+    toggles = toggles_from_sectors(current)
+    assert toggles == [True, True, False, False, False, False, True, False]
+    toggles[0] = False  # user switches north off
+    rebuilt = sectors_from_toggles(toggles, current)
+    assert [265.0, 292.5] in rebuilt
+    assert [247.5, 292.5] not in rebuilt
+
+
+def test_re_enabling_a_direction_restores_the_full_octant():
+    from kitebot.analysis import sectors_from_toggles
+    current = [[265.0, 292.5]]
+    off = sectors_from_toggles([False] * 8, current)
+    assert off == []
+    back_on = sectors_from_toggles([False] * 6 + [True, False], off)
+    assert back_on == [[247.5, 292.5]]
+
+
+def test_toggling_off_splits_a_multi_octant_sector():
+    """[0, 180] covers N..S; switching east off must not keep east allowed."""
+    from kitebot.analysis import sectors_from_toggles, toggles_from_sectors
+    current = [[0.0, 180.0]]
+    toggles = toggles_from_sectors(current)
+    assert toggles == [True, True, True, True, True, False, False, False]
+    assert sectors_from_toggles(toggles, current) == [[0.0, 180.0]]
+    toggles[2] = False  # east off
+    rebuilt = sectors_from_toggles(toggles, current)
+    assert [0.0, 180.0] not in rebuilt
+    assert toggles_from_sectors(rebuilt) == toggles
+
+
+def test_narrowed_bounds_only_flags_sub_octant_sectors():
+    from kitebot.analysis import narrowed_bounds
+    assert narrowed_bounds(6, [[265.0, 292.5]]) == (265.0, 292.5)
+    assert narrowed_bounds(6, [[247.5, 292.5]]) is None
+    assert narrowed_bounds(0, [[0.0, 180.0]]) is None
+    assert narrowed_bounds(0, [[350.0, 10.0]]) == (350.0, 10.0)
+
+
 def test_direction_words_latvian():
     from kitebot.messages import direction_word
     assert direction_word(0) == "ziemeļu vējš"
@@ -159,6 +206,8 @@ def test_describe_directions_words_and_degrees():
     toggles[6] = toggles[7] = True  # W, NW
     assert describe_directions(sectors_from_toggles(toggles)) == "Rietumi, Ziemeļrietumi"
     assert "290°–20°" in describe_directions([[290, 20]])
+    # a narrowed sector spells itself out without hiding the named ones
+    assert describe_directions([[337.5, 22.5], [265.0, 292.5]]) == "Ziemeļi, 265°–292°"
 
 
 def test_subscription_spot_filter_roundtrip(tmp_path, monkeypatch):

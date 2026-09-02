@@ -91,8 +91,69 @@ def toggles_from_sectors(sectors: list) -> list:
     return [in_sectors(i * 45, sectors) for i in range(8)]
 
 
-def sectors_from_toggles(toggles: list) -> list:
-    return [list(DIRECTION_SECTORS[i]) for i, on in enumerate(toggles) if on]
+def _covered_octants(sector: list) -> list:
+    """Indices of the 8 main directions whose centre falls inside `sector`."""
+    return [i for i in range(8) if in_sectors(i * 45, [sector])]
+
+
+def sector_span(lo: float, hi: float) -> float:
+    """Width of a [lo, hi] sector in degrees, wrapping through north."""
+    return (hi - lo) % 360 or 360.0
+
+
+def narrowed_bounds(index: int, sectors: list) -> "tuple | None":
+    """(lo, hi) when direction `index` is allowed by a sector strictly narrower
+    than its full 45° octant, else None.
+
+    Lets the UI say that "west" here means 265°–293°, so a hand-tuned spot does
+    not look identical to one using the plain octant.
+    """
+    octant = list(DIRECTION_SECTORS[index])
+    width = sector_span(*octant)
+    for sector in sectors:
+        sector = list(sector)
+        if index not in _covered_octants(sector) or sector == octant:
+            continue
+        offset = (sector[0] - octant[0]) % 360
+        if offset + sector_span(*sector) <= width + 1e-9:
+            return sector[0], sector[1]
+    return None
+
+
+def _keep_sector(index: int, current: list, toggles: list) -> "list | None":
+    """The existing sector that owns direction `index`, if it can be kept as is.
+
+    A sector owns a direction when it covers that direction's centre — the same
+    test `toggles_from_sectors` uses, so what the buttons show and what gets
+    preserved never disagree. It can only be kept when every direction it
+    covers is still on; otherwise keeping it would silently re-allow a
+    direction the user just switched off.
+    """
+    for sector in current:
+        covered = _covered_octants(sector)
+        if index in covered and all(toggles[i] for i in covered):
+            return list(sector)
+    return None
+
+
+def sectors_from_toggles(toggles: list, current: "list | None" = None) -> list:
+    """Rebuild the sector list from the 8 direction toggles.
+
+    Pass the spot's existing sectors as `current` to preserve hand-tuned
+    bounds. A spot may narrow a direction below its 45° octant — e.g. a
+    north-facing beach allowing [265, 292.5] instead of the full west octant
+    [247.5, 292.5], so that side-offshore wind never counts as rideable — and
+    that narrowing must survive toggling an unrelated direction. Only newly
+    enabled directions get the full octant.
+    """
+    out: list = []
+    for i, on in enumerate(toggles):
+        if not on:
+            continue
+        sector = _keep_sector(i, current or [], toggles) or list(DIRECTION_SECTORS[i])
+        if sector not in out:
+            out.append(sector)
+    return out
 
 
 def circular_mean(degs: list) -> float:
