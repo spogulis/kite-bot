@@ -59,6 +59,14 @@ def clip_past(windows: list, now: datetime) -> list:
     return out
 
 
+def clip_to_day(windows: list, day_ref: datetime) -> list:
+    """Windows whose start falls on the same calendar day as `day_ref`,
+    compared in `day_ref`'s timezone. Powers the today-only daily digest."""
+    tz = day_ref.tzinfo
+    today = day_ref.date()
+    return [w for w in windows if w.start.astimezone(tz).date() == today]
+
+
 DRY_MM_PER_HOUR = 0.5  # up to this average intensity still counts as "dry"
 
 

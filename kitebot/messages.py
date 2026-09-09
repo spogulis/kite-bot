@@ -7,8 +7,10 @@ from __future__ import annotations
 import html
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
-from .analysis import DIRECTION_SECTORS, Window
+from .analysis import DIRECTION_SECTORS, Window, clip_to_day
 from .config import UNIT_LABELS, Settings, Spot
 
 TELEGRAM_LIMIT = 4000  # hard limit is 4096; keep headroom
@@ -36,6 +38,14 @@ class SpotResult:
 
 def any_windows(results: list) -> bool:
     return any(r.windows for r in results)
+
+
+def today_windows(results: list, settings: Settings) -> list:
+    """Same results with only today's windows kept (spot-local calendar day,
+    in the digest timezone). The daily digest is deliberately today-only."""
+    now = datetime.now(ZoneInfo(settings.timezone))
+    return [SpotResult(spot=r.spot, windows=clip_to_day(r.windows, now), error=r.error)
+            for r in results]
 
 
 def unit_label(unit: str) -> str:
@@ -108,9 +118,11 @@ def _days_lv(days: int) -> str:
     return "šodienai" if days == 1 else f"nākamās {days} dienas"
 
 
-def build_digest(results: list, settings: Settings, title: str = "Kaita prognoze") -> str:
+def build_digest(results: list, settings: Settings, title: str = "Kaita prognoze",
+                 day_span: "int | None" = None) -> str:
     label = unit_label(settings.wind_unit)
-    header = f"🪁 <b>{html.escape(title)}</b> · {_days_lv(settings.forecast_days)}"
+    span = settings.forecast_days if day_span is None else day_span
+    header = f"🪁 <b>{html.escape(title)}</b> · {_days_lv(span)}"
     if results and not any(r.windows or r.error for r in results):
         return header + "\n\nNevienā spotā nav braucama vēja."
     blocks = [header]
