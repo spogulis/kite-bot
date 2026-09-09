@@ -27,7 +27,7 @@ from .checker import gather_results
 from .config import Spot, Subscription
 from .messages import (
     DIRECTION_LABELS_LV, SpotResult, any_windows, build_digest, describe_spot,
-    format_window, split_message, unit_label,
+    format_window, split_message, today_windows, unit_label,
 )
 
 log = logging.getLogger(__name__)
@@ -1742,7 +1742,7 @@ def _filter_results(results: list, sub: Subscription) -> list:
 
 
 def _daily_text(results: list, settings, extra: "str | None" = None) -> str:
-    digest = build_digest(results, settings, title=DAILY_TITLE_LV)
+    digest = build_digest(results, settings, title=DAILY_TITLE_LV, day_span=1)
     if extra:
         digest = digest + "\n\n" + extra
     if settings.daily_greeting:
@@ -1767,7 +1767,7 @@ async def cmd_testdigest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             chat_id=msg.chat_id, action=ChatAction.TYPING, message_thread_id=thread_id)
     except TelegramError:
         pass
-    results = await gather_results(spots, settings)
+    results = today_windows(await gather_results(spots, settings), settings)
     woo_section, woo_status = await build_woo_section(settings, update_records=False)
     sub = config.find_subscription(msg.chat_id, thread_id)
     if sub is not None:
@@ -1799,9 +1799,8 @@ async def daily_job(context: ContextTypes.DEFAULT_TYPE) -> None:
     if not spots:
         log.info("daily digest: no spots configured, skipping")
         return
-    results = await gather_results(spots, settings, robust=True)
+    results = today_windows(await gather_results(spots, settings, robust=True), settings)
     woo_section, _ = await build_woo_section(settings, update_records=True)
-    keyboard = _menu_keyboard(spots)
     cache: dict = {}
     for sub in subs:
         filtered = _filter_results(results, sub)
@@ -1811,17 +1810,16 @@ async def daily_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         key = tuple(sorted(n.lower() for n in sub.spots))
         if key not in cache:
             cache[key] = split_message(_daily_text(filtered, settings, extra=woo_section))
-        await _send_digest(context, sub, cache[key], keyboard)
+        await _send_digest(context, sub, cache[key])
 
 
 async def _send_digest(context: ContextTypes.DEFAULT_TYPE, sub: Subscription,
-                       parts: list, keyboard: InlineKeyboardMarkup) -> None:
+                       parts: list) -> None:
     async def send_to(chat_id: int) -> None:
-        for i, part in enumerate(parts):
+        for part in parts:
             await context.bot.send_message(
                 chat_id=chat_id, text=part, parse_mode=ParseMode.HTML,
                 message_thread_id=sub.thread_id,
-                reply_markup=keyboard if i == len(parts) - 1 else None,
             )
 
     try:

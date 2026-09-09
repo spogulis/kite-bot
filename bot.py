@@ -49,8 +49,8 @@ async def _dry_run() -> None:
     if not spots:
         print("No spots configured.")
         return
-    results = await gather_results(spots, settings)
-    print(messages.to_plain(messages.build_digest(results, settings)))
+    results = messages.today_windows(await gather_results(spots, settings), settings)
+    print(messages.to_plain(messages.build_digest(results, settings, day_span=1)))
 
 
 def main() -> None:
