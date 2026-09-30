@@ -12,7 +12,7 @@ default_cell: sea            # forecast grid cell for NEW spots: sea = wind over
 daily_post_time: "07:00"     # when the daily digest is posted to subscribed chats
 daily_greeting: "Labrīt, kaiteri!"   # first line of the daily post; "" disables it
 forecast_days: 3             # days ahead to scan (1-7)
-post_when_no_wind: true      # false = stay silent on days with nothing rideable
+post_when_no_wind: false     # windless morning: only yesterday's riders, if any; true = full digest
 min_window_hours: 2          # conditions must hold at least this many hours in a row
 # wind_band: 3               # max wind spread (in wind_unit) shown as one line; a bigger
                              # change splits the day into separate lines (different kite sizes)

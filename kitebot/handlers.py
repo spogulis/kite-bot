@@ -8,6 +8,7 @@ import html
 import logging
 import secrets
 import shlex
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -1249,7 +1250,8 @@ async def cmd_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if not await _can_manage_subscription(update, context, settings):
         return
     if config.add_subscription(_subscription_for(msg)):
-        note = "" if settings.post_when_no_wind else " dienās, kad ir braucams vējš"
+        note = ("" if settings.post_when_no_wind
+                else " dienās, kad ir braucams vējš vai kāds vakar brauca")
         await msg.reply_text(
             f"✅ Ikdienas kaita prognoze šeit ieslēgta — sūtīšu ap {settings.daily_post_time} "
             f"({settings.timezone}){note}. Ar /myspots vari izvēlēties, kurus spotus šeit rādīt."
@@ -1387,6 +1389,40 @@ DAILY_TITLE_LV = "Ikdienas kaita prognoze"
 
 # --- WOO rider recap ------------------------------------------------------------
 
+RECAP_TITLE_LV = "🏆 <b>Vakardienas varoņi</b>"
+
+# Heads the recap when someone rode where the morning's digest said there was
+# no wind. Picked by date, so consecutive mornings differ and /testdigest
+# previews the very line the real post will carry.
+FOOLED_FORECAST_LV = (
+    "Izskatās, ka kāds matraci atrullēja:",
+    "Kam vakar nebija, ko darīt:",
+    "📡 Kļūda 404: bezvējš nav atrasts.",
+    "🏅 Bonusa punkti par prognozes ignorēšanu:",
+)
+
+
+@dataclass
+class Recap:
+    """Yesterday's riders, ready for either kind of morning message."""
+    lines: list      # rider lines, HTML-escaped, ranked
+    quirk: str = ""  # a FOOLED_FORECAST_LV line when someone beat the forecast
+
+    def _quirk_html(self) -> str:
+        return f"<i>{html.escape(self.quirk)}</i>"
+
+    def in_digest(self) -> str:
+        """The section under a forecast: title, the quirk if any, riders."""
+        head = [RECAP_TITLE_LV] + ([self._quirk_html()] if self.quirk else [])
+        return "\n".join(head + self.lines)
+
+    def on_its_own(self) -> str:
+        """A windless morning's whole message: no greeting and no empty
+        forecast, just the quirk (or the title when nobody fooled it) and the
+        riders."""
+        return "\n".join([self._quirk_html() if self.quirk else RECAP_TITLE_LV] + self.lines)
+
+
 # /woorider search results awaiting an admin's button tap; woo_id -> candidate
 _woo_candidates: dict = {}
 
@@ -1411,9 +1447,15 @@ def _yesterday_range(settings) -> tuple:
     return int(start.timestamp()), int(midnight.timestamp()), start.date().isoformat()
 
 
+def _today(settings):
+    return datetime.now(ZoneInfo(settings.timezone)).date()
+
+
 async def build_woo_section(settings, update_records: bool) -> tuple:
-    """(section_html | None, latvian_status) for the 'yesterday's heroes' part.
-    Merges WOO and Surfr riders; any provider failure is logged and skipped."""
+    """(Recap | None, latvian_status) for the 'yesterday's heroes' part.
+    Merges WOO and Surfr riders; any provider failure is logged and skipped.
+    The recap carries a quirky line when someone rode where yesterday
+    morning's digest found no wind (see config.record_forecast)."""
     riders = config.load_riders()
     if not riders:
         return None, "nav pievienotu braucēju (/woorider, /surfrider)"
@@ -1439,13 +1481,17 @@ async def build_woo_section(settings, update_records: bool) -> tuple:
     failure_note = f" ({'/'.join(failures)} API neatbildēja)" if failures else ""
     if failures and not stats:
         return None, f"{'/'.join(failures)} API šobrīd neatbild, sadaļa izlaista"
-    lines, updated, changed = woo.summarize(riders, stats)
+    spot_names = [s.name for s in config.load_spots(settings)]
+    lines, updated, changed = woo.summarize(riders, stats, spot_names)
     if changed and update_records:
         config.save_riders(updated)
     if not lines:
         return None, f"neviens no {len(riders)} braucējiem vakar nebrauca, sadaļu nerādu{failure_note}"
-    section = "🏆 <b>Vakardienas varoņi</b>\n" + "\n".join(html.escape(line) for line in lines)
-    return section, "sadaļa iekļauta" + failure_note
+    quirk = ""
+    if woo.fooled_the_forecast(riders, stats, config.load_forecast_log().get(date_str, {})):
+        quirk = FOOLED_FORECAST_LV[_today(settings).toordinal() % len(FOOLED_FORECAST_LV)]
+    recap = Recap(lines=[html.escape(line) for line in lines], quirk=quirk)
+    return recap, "sadaļa iekļauta" + failure_note
 
 
 def _rider_pfx(rider: dict) -> str:
@@ -1750,6 +1796,18 @@ def _daily_text(results: list, settings, extra: "str | None" = None) -> str:
     return digest
 
 
+def _morning_text(results: list, settings, recap: "Recap | None") -> "str | None":
+    """One chat's morning message, or None when the chat should hear nothing.
+
+    With post_when_no_wind off, a morning with nothing rideable sends no
+    forecast at all — but if anyone rode yesterday, their recap still goes
+    out on its own, so a session the forecast missed is never swallowed.
+    """
+    if any_windows(results) or settings.post_when_no_wind:
+        return _daily_text(results, settings, extra=recap.in_digest() if recap else None)
+    return recap.on_its_own() if recap else None
+
+
 async def cmd_testdigest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.effective_message
     if msg is None:
@@ -1768,23 +1826,27 @@ async def cmd_testdigest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     except TelegramError:
         pass
     results = today_windows(await gather_results(spots, settings), settings)
-    woo_section, woo_status = await build_woo_section(settings, update_records=False)
+    recap, recap_status = await build_woo_section(settings, update_records=False)
     sub = config.find_subscription(msg.chat_id, thread_id)
     if sub is not None:
         results = _filter_results(results, sub)
-    would_send = any_windows(results) or settings.post_when_no_wind
-    if would_send:
+    body = _morning_text(results, settings, recap)
+    if body is None:
+        intro = ("ℹ️ Tests — šodien īstā ikdienas ziņa NEtiktu sūtīta (nav braucama "
+                 "vēja, un vakar neviens nebrauca). Saturs būtu šāds:")
+        body = _daily_text(results, settings)
+    elif any_windows(results) or settings.post_when_no_wind:
         intro = "ℹ️ Tests — šādi izskatās šī čata ikdienas ziņa:"
     else:
-        intro = ("ℹ️ Tests — šodien īstā ikdienas ziņa NEtiktu sūtīta (nav braucama "
-                 "vēja, un post_when_no_wind ir izslēgts). Saturs būtu šāds:")
+        intro = ("ℹ️ Tests — šodien nav braucama vēja, tāpēc ziņā būtu tikai "
+                 "vakardienas braucēji:")
     subs = config.load_subscriptions()
     outro = (f"Pierakstīti {len(subs)} čati · sūtīšanas laiks {settings.daily_post_time} "
              f"({settings.timezone}).")
     if sub is not None and sub.spots:
         outro += f"\nŠī čata spotu filtrs: {', '.join(sub.spots)}."
-    outro += f"\nWOO: {woo_status}."
-    text = intro + "\n\n" + _daily_text(results, settings, extra=woo_section) + "\n\n" + outro
+    outro += f"\nWOO: {recap_status}."
+    text = intro + "\n\n" + body + "\n\n" + outro
     for part in split_message(text):
         await msg.reply_html(part)
 
@@ -1800,16 +1862,20 @@ async def daily_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         log.info("daily digest: no spots configured, skipping")
         return
     results = today_windows(await gather_results(spots, settings, robust=True), settings)
-    woo_section, _ = await build_woo_section(settings, update_records=True)
+    # tomorrow's recap reads this to tell who rode where the forecast said calm
+    config.record_forecast(_today(settings).isoformat(),
+                           {r.spot.name: bool(r.windows) for r in results if not r.error})
+    recap, _ = await build_woo_section(settings, update_records=True)
     cache: dict = {}
     for sub in subs:
-        filtered = _filter_results(results, sub)
-        if not any_windows(filtered) and not settings.post_when_no_wind:
-            log.info("daily digest: nothing rideable for chat %s, staying quiet", sub.chat_id)
-            continue
         key = tuple(sorted(n.lower() for n in sub.spots))
         if key not in cache:
-            cache[key] = split_message(_daily_text(filtered, settings, extra=woo_section))
+            text = _morning_text(_filter_results(results, sub), settings, recap)
+            cache[key] = split_message(text) if text else []
+        if not cache[key]:
+            log.info("daily digest: nothing rideable and nobody rode, staying quiet in chat %s",
+                     sub.chat_id)
+            continue
         await _send_digest(context, sub, cache[key])
 
 

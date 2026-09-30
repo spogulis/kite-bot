@@ -4,6 +4,7 @@
   schedule changes need a restart.
 - data/spots.yaml: the spot list, editable via /addspot & /delspot or by hand.
 - data/subscriptions.json: chats that receive the daily digest.
+- data/forecast_log.json: which spots each morning's digest found wind at.
 
 Wind speeds (spot thresholds, messages, forecast requests) all use the unit
 configured as `wind_unit`.
@@ -27,6 +28,8 @@ SPOTS_FILE = DATA_DIR / "spots.yaml"
 SUBSCRIPTIONS_FILE = DATA_DIR / "subscriptions.json"
 RIDERS_FILE = DATA_DIR / "riders.json"
 USERS_FILE = DATA_DIR / "users.json"
+FORECAST_LOG_FILE = DATA_DIR / "forecast_log.json"
+FORECAST_LOG_DAYS = 7
 
 # Wind units supported by Open-Meteo's wind_speed_unit parameter.
 UNIT_LABELS = {"kn": "kn", "ms": "m/s", "kmh": "km/h", "mph": "mph"}
@@ -167,7 +170,7 @@ class Settings:
     daily_post_time: str = "07:00"
     daily_greeting: str = "Labrīt, kaiteri!"
     forecast_days: int = 3
-    post_when_no_wind: bool = True
+    post_when_no_wind: bool = False  # windless morning: only yesterday's riders, if anyone rode
     min_window_hours: int = 2
     day_start_hour: int = 8
     day_end_hour: int = 20
@@ -418,6 +421,28 @@ def merge_riders(prefix_a: str, prefix_b: str) -> "dict | None":
     riders.remove(b)
     save_riders(riders)
     return a
+
+
+def load_forecast_log() -> dict:
+    """{iso_date: {spot_name: had_window}} — what each morning's digest said,
+    so the next morning can tell who rode where it promised no wind."""
+    if not FORECAST_LOG_FILE.exists():
+        return {}
+    try:
+        raw = json.loads(FORECAST_LOG_FILE.read_text())
+    except json.JSONDecodeError:
+        log.warning("could not parse %s, treating as empty", FORECAST_LOG_FILE)
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def record_forecast(date_iso: str, had_window: dict) -> None:
+    """Remember one morning's per-spot verdict; only the last week is kept."""
+    days = load_forecast_log()
+    days[date_iso] = {str(name): bool(value) for name, value in had_window.items()}
+    kept = dict(sorted(days.items())[-FORECAST_LOG_DAYS:])
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    FORECAST_LOG_FILE.write_text(json.dumps(kept, indent=2))
 
 
 def to_knots(value: float, unit: str) -> float:

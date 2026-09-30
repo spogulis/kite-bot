@@ -6,8 +6,10 @@ spots and tells you when it's worth rigging up.
 - **Daily digest** — posted every morning to every subscribed chat (your kite
   group, your own DM, a specific group topic). Each chat can filter which
   spots its digest covers (`/myspots`), so users who only care about some
-  spots subscribe in a DM and pick theirs. Set `post_when_no_wind: false` to
-  skip mornings with nothing rideable.
+  spots subscribe in a DM and pick theirs. Mornings with nothing rideable
+  skip the forecast: if anyone rode yesterday only their recap goes out,
+  otherwise nothing does. Set `post_when_no_wind: true` to post the full
+  digest anyway.
 - **On demand** — anyone can tap the `/menu` buttons or type `/check`, in the
   group or in a DM.
 - **Configurable spots** — added by sharing a Telegram location, managed with
@@ -140,7 +142,7 @@ restart — friends keep their personal DM digests, but editing is locked down.
 | `daily_post_time` | `"07:00"` | When the digest is posted |
 | `daily_greeting` | `"Labrīt, kaiteri!"` | First line of the daily post; empty string disables |
 | `forecast_days` | `3` | Days ahead to scan (1–7) |
-| `post_when_no_wind` | `true` | Post even when nothing is rideable; `false` = stay silent those days |
+| `post_when_no_wind` | `false` | `false` = when nothing is rideable today, send only yesterday's rider recap — or nothing if nobody rode; `true` = post the full digest anyway |
 | `min_window_hours` | `2` | Minimum consecutive rideable hours |
 | `wind_band` | per unit (3 m/s / 6 kn) | Max wind spread reported as one line; bigger changes split the day into separate lines (different kite sizes). `0` disables |
 | `default_model` | `best_match` | Weather model: `best`, `gfs` (Windguru's GFS 13 km table), `icon`, `ecmwf`, `harmonie` (2 km, ~ Windguru's HARM-DK column; northern/central Europe, best for 1–2 days ahead); per-spot override via `model=` |
@@ -182,18 +184,38 @@ best jump for tracked riders, plus distance ridden (WOO only) and longest jump
 session totals), pulled from the WOO Sports and Surfr public leaderboards (the
 same unofficial APIs their leaderboard
 sites use — best-effort: if a provider changes or blocks its API, its riders
-silently drop out of the section and the forecast still posts).
+silently drop out of the section and the forecast still posts). On a
+windless morning the recap goes out on its own — no greeting, no empty
+forecast — so a session the forecast missed is never swallowed.
+
+When someone rode at one of your spots where that morning's digest showed no
+window, the recap opens with a line teasing the forecast, rotating daily
+(e.g. "Kam vakar nebija, ko darīt:", "📡 Kļūda 404: bezvējš nav atrasts.").
+The daily job records each morning's per-spot verdict in
+`data/forecast_log.json` (last 7 days) for this; riders abroad never trigger
+it, and the first morning after an upgrade has nothing recorded yet.
 
 Each metric is marked with an icon instead of a word, always in this order:
 
 ```
-🏄 Kristaps Liepiņš — ⬆️ 11,7 m · ↔️ 30,0 m · 🛣️ 22,1 km
+🏄 Kristaps Liepiņš — ⬆️ 11,7 m · ↔️ 30,0 m · 🛣️ 22,1 km · 🪁 12m Duotone Rebel SLS · 📍 Engures Mols
+🏄 Kristina — ⬆️ 3,4 m · ↔️ 35,0 m · 📍 Ria de Alvor (PT)
 ```
 
-⬆️ jump height · ↔️ jump distance · 🛣️ distance ridden. A rider shows only the
-metrics their app reports, so Surfr-only riders have no 🛣️ and WOO-only riders
-have no ↔️. Riders are ranked by jump height, highest first; anyone whose app
-logged no jump is listed last.
+⬆️ jump height · ↔️ jump distance · 🛣️ distance ridden · 🪁 kite · 📍 spot. A
+rider shows only what their app reports, so Surfr-only riders have no 🛣️ and
+WOO-only riders have no ↔️.
+
+🪁 and 📍 describe the day's best jump, spelled the way the app has them (so
+the spot may read "Engures Mols" where your list says "Engure"). The kite
+comes from WOO only — Surfr's public API names the board type but not the
+kite — and a rider who logged no jump on WOO has neither.
+
+A spot that is **not** one of your configured ones also shows its country — a
+rider on holiday. Without it a line like the second one above looks like a
+broken forecast: someone logged a session on a morning the digest said no
+spot had wind. Only Surfr reports countries. Riders are ranked by jump
+height, highest first; anyone whose app logged no jump is listed last.
 
 Admins add riders with `/woorider <name>` (WOO, searches the last 30 days) or
 `/surfrider <name>` (Surfr, searches this week then this month) and pick from

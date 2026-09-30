@@ -316,6 +316,249 @@ def test_summarize_surfr_jump_distance_is_not_km():
     assert "⬆️ 2,4 m" in lines[0] and "↔️ 30,0 m" in lines[0]
 
 
+def test_summarize_adds_the_country_of_a_spot_abroad():
+    """The Kristina case: a session on a day every configured spot forecast no
+    wind reads as a forecast bug unless the line says where it happened."""
+    from kitebot.woo import summarize
+    riders = [{"name": "Kristina", "record_height_m": 3.0, "ids": {"surfr": "9"}}]
+    stats = {"surfr:9": {"jump_distance_m": 35.0, "spot_name": "Ria de Alvor",
+                         "spot_country": "PT"}}
+    lines, _, _ = summarize(riders, stats, ["Vecāķi", "Bernati"])
+    assert lines[0] == "🏄 Kristina — ↔️ 35,0 m · 📍 Ria de Alvor (PT)"
+
+
+def test_summarize_names_a_home_spot_without_its_country():
+    """Home sessions show the spot too, minus the country; Surfr's own
+    spelling (no diacritics) must still count as the configured spot."""
+    from kitebot.woo import summarize
+    riders = [{"name": "Kristina", "record_height_m": 3.0, "ids": {"surfr": "9"}}]
+    stats = {"surfr:9": {"height_m": 2.4, "spot_name": "Vecaki", "spot_country": "LV"}}
+    lines, _, _ = summarize(riders, stats, ["Vecāķi"])
+    assert lines[0] == "🏄 Kristina — ⬆️ 2,4 m · 📍 Vecaki"
+
+
+def test_summarize_shows_the_woo_kite_and_spot():
+    """WOO names the kite and spot of the best jump, never a country — and
+    spells the spot its own way ("Engures Mols" for the configured "Engure")."""
+    from kitebot.woo import summarize
+    riders = [{"name": "Alfa", "record_height_m": 18.7, "ids": {"woo": "a"}}]
+    stats = {"woo:a": {"distance_m": 1960.0, "height_m": 7.6,
+                       "spot_name": "Engures Mols", "kite": "15m Flysurfer Sonic 5"}}
+    lines, _, _ = summarize(riders, stats, ["Engure"])
+    assert lines[0] == ("🏄 Alfa — ⬆️ 7,6 m · 🛣️ 2,0 km · "
+                        "🪁 15m Flysurfer Sonic 5 · 📍 Engures Mols")
+
+
+def test_summarize_merged_rider_takes_the_spot_of_the_higher_jump():
+    """Both apps may name the spot; the line follows the jump it headlines,
+    not whichever app the rider was added with first."""
+    from kitebot.woo import summarize
+    riders = [{"name": "Alfa", "record_height_m": 20.0, "ids": {"woo": "w", "surfr": "s"}}]
+    stats = {"woo:w": {"height_m": 5.9, "spot_name": "Engures Mols", "kite": "12m Core XR PRO"},
+             "surfr:s": {"height_m": 7.6, "spot_name": "Engure", "spot_country": "LV"}}
+    lines, _, _ = summarize(riders, stats, ["Engure"])
+    assert lines[0].endswith(" · 🪁 12m Core XR PRO · 📍 Engure")
+
+
+def test_summarize_spot_comes_before_a_new_record():
+    """The record marker is the loudest part of a line and stays last."""
+    from kitebot.woo import summarize
+    riders = [{"name": "Kristina", "record_height_m": 2.0, "ids": {"surfr": "9"}}]
+    stats = {"surfr:9": {"height_m": 4.0, "spot_name": "Dakhla", "spot_country": "MA"}}
+    lines, _, changed = summarize(riders, stats, ["Vecāķi"])
+    assert changed
+    assert lines[0].index("📍") < lines[0].index("REKORDS")
+
+
+def test_summarize_without_known_spots_still_marks_surfr_spots():
+    """Without a spot list every spot counts as abroad; passing none must not crash."""
+    from kitebot.woo import summarize
+    riders = [{"name": "Alfa", "record_height_m": 9.0, "ids": {"woo": "a", "surfr": "s"}}]
+    stats = {"woo:a": {"distance_m": 12000, "height_m": 5.0},
+             "surfr:s": {"height_m": 5.0, "spot_name": "Tarifa", "spot_country": "ES"}}
+    lines, _, _ = summarize(riders, stats)
+    assert "📍 Tarifa (ES)" in lines[0]
+
+
+def test_woo_day_stats_takes_spot_and_kite_from_the_jump(monkeypatch):
+    """Only WOO's jump board carries spot and gear; its distance board is a
+    day total with "spot": null, and country_code is the rider's, not the spot's."""
+    import asyncio
+
+    from kitebot import woo
+
+    boards = {
+        "total_distance": [{"user": {"id": "a"}, "score": 1960.0, "spot": None,
+                            "gear": None, "country_code": "LV"}],
+        "height": [{"user": {"id": "a"}, "score": 7.6, "spot": "Engures Mols",
+                    "gear": "15m Flysurfer Sonic 5", "country_code": "LV"},
+                   {"user": {"id": "x"}, "score": 5.0, "spot": "Tarifa", "gear": "9m Rebel"}],
+    }
+
+    async def fake_page(client, token, feature, game_type, offset, start=None, end=None):
+        return {"status": "ok", "size": len(boards[feature]), "items": boards[feature]}
+
+    monkeypatch.setattr(woo, "_page", fake_page)
+    stats = asyncio.run(woo.day_stats("token", 0, 86400, {"a"}))
+    assert stats == {"a": {"distance_m": 1960.0, "height_m": 7.6,
+                           "spot_name": "Engures Mols", "kite": "15m Flysurfer Sonic 5"}}
+
+
+def test_surfr_day_stats_keeps_the_spot_of_the_highest_jump(monkeypatch):
+    """Two sessions in a day: the spot shown is where the best jump was, even
+    though the jump-distance board ranks the other session first."""
+    import asyncio
+
+    from kitebot import surfr
+
+    boards = {
+        "height": [{"user": {"id": 9}, "value": 4.0, "spotName": "Engure", "spotCountry": "LV"},
+                   {"user": {"id": 9}, "value": 2.0, "spotName": "Bērzciems", "spotCountry": "LV"}],
+        "distance": [{"user": {"id": 9}, "value": 30.0, "spotName": "Bērzciems",
+                      "spotCountry": "LV"}],
+    }
+
+    async def fake_page(client, token, category, period, page, date_from=None, date_to=None):
+        return boards[category] if page == 0 else []
+
+    monkeypatch.setattr(surfr, "_page", fake_page)
+    stats = asyncio.run(surfr.day_stats("token", "2026-09-28", {"9"}))
+    assert stats == {"9": {"height_m": 4.0, "jump_distance_m": 30.0,
+                           "spot_name": "Engure", "spot_country": "LV"}}
+
+
+def test_daily_job_windless_morning_sends_only_yesterdays_riders(tmp_path, monkeypatch):
+    """Nothing rideable today: no greeting and no empty forecast. Yesterday's
+    riders still go out on their own, and with nobody to show the chat hears
+    nothing. post_when_no_wind: true brings back the full digest."""
+    import asyncio
+    import json
+    from datetime import timedelta
+
+    from kitebot import config, handlers
+    from kitebot.analysis import Window
+    from kitebot.config import Settings
+    from kitebot.messages import SpotResult
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(config, "FORECAST_LOG_FILE", tmp_path / "forecast_log.json")
+    sent: list = []
+
+    class FakeBot:
+        async def send_message(self, **kwargs):
+            sent.append(kwargs["text"])
+
+    class FakeContext:
+        bot = FakeBot()
+
+    async def no_wind(spots, settings, robust=False):
+        return [SpotResult(spot=s) for s in spots]
+
+    async def windy(spots, settings, robust=False):
+        noon = datetime.now(ZoneInfo(settings.timezone)).replace(
+            hour=12, minute=0, second=0, microsecond=0)
+        w = Window(start=noon, end=noon + timedelta(hours=3), min_speed=8, max_speed=10,
+                   max_gust=13, direction=45)
+        return [SpotResult(spot=s, windows=[w]) for s in spots]
+
+    async def someone_rode(settings, update_records):
+        return (handlers.Recap(lines=["🏄 Alfa — ⬆️ 7,6 m"], quirk="Kam vakar nebija, ko darīt:"),
+                "sadaļa iekļauta")
+
+    async def nobody_rode(settings, update_records):
+        return None, "neviens nebrauca"
+
+    monkeypatch.setattr(config, "load_subscriptions", lambda: [config.Subscription(chat_id=1)])
+    monkeypatch.setattr(config, "load_spots", lambda settings=None: [spot(name="Engure")])
+    monkeypatch.setattr(config, "load_settings", lambda: Settings())
+
+    def morning(gather, build) -> list:
+        sent.clear()
+        monkeypatch.setattr(handlers, "gather_results", gather)
+        monkeypatch.setattr(handlers, "build_woo_section", build)
+        asyncio.run(handlers.daily_job(FakeContext()))
+        return list(sent)
+
+    assert morning(no_wind, nobody_rode) == []
+    # the verdict is saved even on a silent morning, for tomorrow's recap
+    today = datetime.now(ZoneInfo("Europe/Riga")).date().isoformat()
+    assert json.loads((tmp_path / "forecast_log.json").read_text()) == {today: {"Engure": False}}
+
+    assert morning(no_wind, someone_rode) == ["<i>Kam vakar nebija, ko darīt:</i>\n🏄 Alfa — ⬆️ 7,6 m"]
+
+    [text] = morning(windy, someone_rode)
+    assert text.startswith("Labrīt, kaiteri!")
+    assert text.endswith("🏆 <b>Vakardienas varoņi</b>\n<i>Kam vakar nebija, ko darīt:</i>\n"
+                         "🏄 Alfa — ⬆️ 7,6 m")
+
+    monkeypatch.setattr(config, "load_settings", lambda: Settings(post_when_no_wind=True))
+    [text] = morning(no_wind, nobody_rode)
+    assert "Nevienā spotā nav braucama vēja." in text
+
+
+def test_recap_without_a_quirk_keeps_its_title_on_a_windless_morning():
+    from kitebot.handlers import Recap
+    assert Recap(lines=["🏄 Alfa — ⬆️ 7,6 m"]).on_its_own() == (
+        "🏆 <b>Vakardienas varoņi</b>\n🏄 Alfa — ⬆️ 7,6 m")
+
+
+def test_fooled_the_forecast_counts_only_home_spots_without_a_window():
+    from kitebot.woo import fooled_the_forecast
+    riders = [{"name": "Alfa", "record_height_m": 9.0, "ids": {"woo": "a"}}]
+    verdict = {"Engure": False, "Bērzciems": True}
+
+    def fooled(day, had_window=verdict):
+        return fooled_the_forecast(riders, {"woo:a": day}, had_window)
+
+    assert fooled({"height_m": 7.6, "spot_name": "Engures Mols"})      # calm promised there
+    assert not fooled({"height_m": 7.6, "spot_name": "Berzciems"})     # the forecast was right
+    assert not fooled({"height_m": 3.4, "spot_name": "Ria de Alvor",   # abroad
+                       "spot_country": "PT"}, {"Engure": False, "Bērzciems": False})
+    assert not fooled({"distance_m": 12000.0})                         # no spot, wind somewhere
+    assert fooled({"distance_m": 12000.0}, {"Engure": False, "Bērzciems": False})
+    assert not fooled({"height_m": 7.6, "spot_name": "Engures Mols"}, {})  # morning not recorded
+
+
+def test_forecast_log_keeps_the_last_week(tmp_path, monkeypatch):
+    from kitebot import config
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(config, "FORECAST_LOG_FILE", tmp_path / "forecast_log.json")
+    for day in range(1, 10):
+        config.record_forecast(f"2026-09-{day:02d}", {"Bērzciems": day % 2 == 0})
+    days = config.load_forecast_log()
+    assert sorted(days) == [f"2026-09-{d:02d}" for d in range(3, 10)]
+    assert days["2026-09-04"] == {"Bērzciems": True}
+
+
+def test_recap_gets_a_quirk_when_someone_rode_where_calm_was_forecast(tmp_path, monkeypatch):
+    """The Engure case: yesterday's digest showed no window at Engure, yet a
+    rider jumped there — the recap says so. Where the forecast was right, no quirk."""
+    import asyncio
+
+    from kitebot import config, handlers, woo
+    from kitebot.config import Settings
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(config, "FORECAST_LOG_FILE", tmp_path / "forecast_log.json")
+    settings = Settings()
+    _, _, yesterday = handlers._yesterday_range(settings)
+    config.record_forecast(yesterday, {"Engure": False, "Bērzciems": True})
+    monkeypatch.setattr(config, "load_riders", lambda: [
+        {"name": "Alfa", "record_height_m": 20.0, "ids": {"woo": "a"}}])
+    monkeypatch.setattr(config, "load_spots", lambda settings=None: [
+        spot(name="Engure"), spot(name="Bērzciems")])
+
+    def recap_for(spot_name):
+        async def day_stats(token, start, end, rider_ids):
+            return {"a": {"height_m": 7.6, "spot_name": spot_name}}
+        monkeypatch.setattr(woo, "day_stats", day_stats)
+        recap, _ = asyncio.run(handlers.build_woo_section(settings, update_records=False))
+        return recap
+
+    assert recap_for("Engures Mols").quirk in handlers.FOOLED_FORECAST_LV
+    assert recap_for("Bērzciems").quirk == ""
+
+
 def test_digest_collapses_when_nothing_rideable():
     from kitebot.config import Settings
     from kitebot.messages import SpotResult, build_digest

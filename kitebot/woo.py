@@ -24,7 +24,10 @@ DEFAULT_TOKEN = (
 )
 
 PAGE_SIZE = 50
-MAX_DAY_PAGES = 12      # per feature; a single day is ~200-500 riders worldwide
+# Per feature. A quiet day is ~150-300 riders worldwide, but 2026-09-27 had 651
+# and the old 12-page cap dropped the lowest 51 jumps — the tail is exactly
+# where a tracked rider on a small day sits, so leave generous headroom.
+MAX_DAY_PAGES = 40
 MAX_SEARCH_PAGES = 120  # ~6000 riders; a 30-day window is ~5-6k in season
 
 log = logging.getLogger(__name__)
@@ -82,14 +85,27 @@ def _item_user(item: dict) -> tuple:
 
 
 async def day_stats(token: str, start: int, end: int, rider_ids: set) -> dict:
-    """{woo_id: {"distance_m": float, "height_m": float}} for riders active in the window."""
+    """{woo_id: {"distance_m", "height_m", "spot_name", "kite"}} for riders
+    active in the window.
+
+    Only the jump leaderboard says where and on what: each entry is the rider's
+    best jump of the day, with its spot and the kite as set in the app
+    ("12m Duotone Rebel SLS"). The distance leaderboard is a day total with
+    neither, so a rider who logged no jump has no spot or kite. There is no
+    spot country — an entry's country_code is the rider's own.
+    """
     stats: dict = {}
 
     def collect(field):
         def on_item(item):
             woo_id, _ = _item_user(item)
             if woo_id in rider_ids:
-                stats.setdefault(woo_id, {})[field] = float(item.get("score") or 0)
+                entry = stats.setdefault(woo_id, {})
+                entry[field] = float(item.get("score") or 0)
+                for key, raw in (("spot_name", item.get("spot")), ("kite", item.get("gear"))):
+                    value = str(raw or "").strip()
+                    if value and not entry.get(key):
+                        entry[key] = value
         return on_item
 
     async with httpx.AsyncClient() as client:
@@ -132,9 +148,91 @@ PROVIDER_LABELS = {"woo": "WOO", "surfr": "Surfr"}
 HEIGHT_ICON = "⬆️"
 JUMP_DISTANCE_ICON = "↔️"
 RIDDEN_ICON = "🛣️"
+KITE_ICON = "🪁"
+SPOT_ICON = "📍"
 
 
-def summarize(riders: list, stats: dict) -> tuple:
+def _sources(rider: dict, stats: dict) -> dict:
+    """{provider: that app's day stats} for the apps that saw the rider ride."""
+    sources = {}
+    for provider, rider_id in (rider.get("ids") or {}).items():
+        day = stats.get(f"{provider}:{rider_id}")
+        if day:
+            sources[provider] = day
+    return sources
+
+
+def _best_jump_first(sources: dict) -> list:
+    """The day's per-app readings, highest jump first — the kite and spot shown
+    on a line describe that jump."""
+    return sorted(sources.values(), key=lambda day: -(day.get("height_m") or 0))
+
+
+def _jump_spot(sources: dict) -> tuple:
+    """(spot, country) of the best jump that names one, else ("", "")."""
+    for day in _best_jump_first(sources):
+        name = (day.get("spot_name") or "").strip()
+        if name:
+            return name, (day.get("spot_country") or "").strip()
+    return "", ""
+
+
+def _match_spot(name: str, spot_names) -> "str | None":
+    """The configured spot an app's spot name refers to, if any.
+
+    Matched loosely (diacritics folded, either side may contain the other)
+    because each app spells spots its own way — WOO's "Engures Mols" is the
+    configured "Engure".
+    """
+    needle = normalize(name)
+    for spot in spot_names or ():
+        known = normalize(spot)
+        if known and (needle == known or needle in known or known in needle):
+            return spot
+    return None
+
+
+def _spot_label(sources: dict, known_spots) -> str:
+    """Where the rider rode, as the app names it ("" if no app says).
+
+    A spot outside the configured list also gets its country code: a rider on
+    holiday logs a session in Portugal on a morning the digest found no wind
+    anywhere, which reads as a broken forecast unless the line says where it
+    happened. Only Surfr reports a country.
+    """
+    name, country = _jump_spot(sources)
+    if not name or not country or _match_spot(name, known_spots) is not None:
+        return name
+    return f"{name} ({country})"
+
+
+def fooled_the_forecast(riders: list, stats: dict, had_window: dict) -> bool:
+    """True when someone rode where that morning's digest promised no wind.
+
+    had_window: {configured spot name: whether the digest showed a window
+    there}, as the daily job recorded it. A rider counts when their best jump
+    was at one of those spots and it had no window; a rider no app places
+    anywhere counts only if no spot had one. Riders abroad never count — the
+    forecast was never about their spot.
+    """
+    if not had_window:
+        return False
+    for rider in riders:
+        sources = _sources(rider, stats)
+        if not sources:
+            continue
+        name, _ = _jump_spot(sources)
+        if not name:
+            if not any(had_window.values()):
+                return True
+            continue
+        spot = _match_spot(name, had_window)
+        if spot is not None and not had_window[spot]:
+            return True
+    return False
+
+
+def summarize(riders: list, stats: dict, known_spots=()) -> tuple:
     """Latvian recap lines for riders who rode, plus riders with updated records.
 
     riders: [{"name", "record_height_m", "ids": {provider: id}}]; stats: merged
@@ -143,7 +241,9 @@ def summarize(riders: list, stats: dict) -> tuple:
     the jump by 0.3 m or more, both readings are shown. Only WOO reports
     distance ridden and only Surfr reports jump distance, so those two parts
     come from whichever app has them. Metrics are marked with icons rather
-    than named, always in the order height, jump distance, distance ridden.
+    than named, always in the order height, jump distance, distance ridden,
+    then the kite (WOO only) and the spot of the best jump. known_spots are
+    the configured spot names, used to tell a home spot from one abroad.
     Lines are ranked by jump height, highest first, so the section reads as a
     leaderboard; riders whose app reported no jump sink to the bottom in the
     order they are configured. updated_riders keeps the input order, since it
@@ -159,11 +259,7 @@ def summarize(riders: list, stats: dict) -> tuple:
     for rider in riders:
         entry = dict(rider)
         entry["ids"] = dict(rider.get("ids") or {})
-        sources = {}
-        for provider, rider_id in entry["ids"].items():
-            day = stats.get(f"{provider}:{rider_id}")
-            if day:
-                sources[provider] = day
+        sources = _sources(entry, stats)
         if sources:
             parts = []
             heights = {p: d["height_m"] for p, d in sources.items() if d.get("height_m")}
@@ -182,6 +278,12 @@ def summarize(riders: list, stats: dict) -> tuple:
             distance = max((d.get("distance_m") or 0) for d in sources.values())
             if distance:
                 parts.append(f"{RIDDEN_ICON} {num(distance / 1000)} km")
+            kite = next((d["kite"] for d in _best_jump_first(sources) if d.get("kite")), "")
+            if kite:
+                parts.append(f"{KITE_ICON} {kite}")
+            spot = _spot_label(sources, known_spots)
+            if spot:
+                parts.append(f"{SPOT_ICON} {spot}")
             record = float(rider.get("record_height_m") or 0)
             if height > record:
                 # Telegram offers no colored text; the red marker + caps is
