@@ -75,11 +75,16 @@ def _item_user(item: dict) -> tuple:
 
 
 async def day_stats(token: str, date_str: str, rider_ids: set) -> dict:
-    """{rider_id: {"jump_distance_m": float, "height_m": float}} for one local date.
+    """{rider_id: {"jump_distance_m", "height_m", "spot_name", "spot_country"}}
+    for one local date.
 
-    Entries are per-session; a rider's best session value wins. Note there is no
-    ridden distance here: Surfr's "distance" leaderboard is the longest single
-    jump in metres, and its API exposes no session totals.
+    Entries are per-session; a rider's best session value wins. Every entry
+    names its spot and the spot's country. Pages come sorted by value and the
+    height board is scanned first, so the spot kept is where the rider's
+    highest jump happened. Note there is no ridden distance here: Surfr's
+    "distance" leaderboard is the longest single jump in metres, and its API
+    exposes no session totals. Nor is there a kite — entries carry only the
+    board type, and session details need a signed-in user's token.
     """
     stats: dict = {}
 
@@ -90,12 +95,16 @@ async def day_stats(token: str, date_str: str, rider_ids: set) -> dict:
                 value = float(item.get("value") or 0)
                 entry = stats.setdefault(rider_id, {})
                 entry[field] = max(entry.get(field, 0), value)
+                spot = str(item.get("spotName") or "").strip()
+                if spot and not entry.get("spot_name"):
+                    entry["spot_name"] = spot
+                    entry["spot_country"] = str(item.get("spotCountry") or "").strip()
         return on_item
 
     async with httpx.AsyncClient() as client:
-        await _scan(client, token, "distance", "custom", collect("jump_distance_m"),
-                    MAX_DAY_PAGES, date_str, date_str)
         await _scan(client, token, "height", "custom", collect("height_m"),
+                    MAX_DAY_PAGES, date_str, date_str)
+        await _scan(client, token, "distance", "custom", collect("jump_distance_m"),
                     MAX_DAY_PAGES, date_str, date_str)
     return stats
 
