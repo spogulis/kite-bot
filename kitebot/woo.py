@@ -24,10 +24,9 @@ DEFAULT_TOKEN = (
 )
 
 PAGE_SIZE = 50
-# Per feature. A quiet day is ~150-300 riders worldwide, but 2026-09-27 had 651
-# and the old 12-page cap dropped the lowest 51 jumps — the tail is exactly
-# where a tracked rider on a small day sits, so leave generous headroom.
-MAX_DAY_PAGES = 40
+# Day scans have no page cap: the first page reports the board's size, and every
+# cap so far dropped the lowest jumps — exactly where a tracked rider on a small
+# day sits (2026-09-27: 651 entries, the old 12-page cap lost 51).
 MAX_SEARCH_PAGES = 120  # ~6000 riders; a 30-day window is ~5-6k in season
 
 log = logging.getLogger(__name__)
@@ -61,14 +60,18 @@ async def _page(client: httpx.AsyncClient, token: str, feature: str, game_type: 
     return data
 
 
-async def _scan(client, token, feature, game_type, start, end, max_pages, on_item) -> None:
+async def _scan(client, token, feature, game_type, start, end, on_item,
+                max_pages=None) -> None:
+    """Fetch the whole board (its size comes with the first page), or up to
+    max_pages when a cap is given."""
     first = await _page(client, token, feature, game_type, 0, start, end)
     size = int(first.get("size") or 0)
     for item in first.get("items") or []:
         on_item(item)
-    offsets = list(range(PAGE_SIZE, min(size, max_pages * PAGE_SIZE), PAGE_SIZE))
-    if size > max_pages * PAGE_SIZE:
-        log.info("WOO %s scan truncated at %d of %d entries", feature, max_pages * PAGE_SIZE, size)
+    limit = size if max_pages is None else min(size, max_pages * PAGE_SIZE)
+    offsets = list(range(PAGE_SIZE, limit, PAGE_SIZE))
+    if size > limit:
+        log.warning("WOO %s scan truncated at %d of %d entries", feature, limit, size)
     for batch_start in range(0, len(offsets), 8):
         batch = offsets[batch_start:batch_start + 8]
         pages = await asyncio.gather(
@@ -110,9 +113,9 @@ async def day_stats(token: str, start: int, end: int, rider_ids: set) -> dict:
 
     async with httpx.AsyncClient() as client:
         await _scan(client, token, "total_distance", "freeride", start, end,
-                    MAX_DAY_PAGES, collect("distance_m"))
+                    collect("distance_m"))
         await _scan(client, token, "height", "big_air", start, end,
-                    MAX_DAY_PAGES, collect("height_m"))
+                    collect("height_m"))
     return stats
 
 
@@ -135,7 +138,7 @@ async def find_riders(token: str, query: str, start: int, end: int, limit: int =
 
     async with httpx.AsyncClient() as client:
         await _scan(client, token, "height", "big_air", start, end,
-                    MAX_SEARCH_PAGES, on_item)
+                    on_item, MAX_SEARCH_PAGES)
     return found
 
 

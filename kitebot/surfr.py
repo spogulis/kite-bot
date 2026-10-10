@@ -10,6 +10,7 @@ ridden), speed (km/h). Undocumented API — treat every call as best-effort.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 
 import httpx
@@ -23,7 +24,9 @@ API_URL = "https://kiter-271715.appspot.com/leaderboards/list/{category}/{period
 DEFAULT_TOKEN = "e16a0f15-67c5-4306-81a5-0c554a55a222"
 
 PAGE_SIZE = 30
-MAX_DAY_PAGES = 100      # one worldwide day is ~1-3k sessions per category
+# Day scans have no page cap: boards are sorted by value, so any cap drops the
+# lowest sessions first. 2026-10-09 had 3732 sessions and the old 100-page cap
+# lost a tracked rider's 2.8 m jump on page 112.
 MAX_SEARCH_PAGES = 700   # a week is ~5-8k sessions, a month ~20k+
 
 log = logging.getLogger(__name__)
@@ -51,22 +54,35 @@ async def _page(client: httpx.AsyncClient, token: str, category: str, period: st
     return data
 
 
-async def _scan(client, token, category, period, on_item, max_pages,
+async def _scan(client, token, category, period, on_item, max_pages=None,
                 date_from=None, date_to=None) -> None:
-    """Walk leaderboard pages (batches of 10) until an empty page or the cap."""
-    for start in range(0, max_pages, 10):
+    """Walk leaderboard pages (batches of 10) until an empty page, or the cap
+    when one is given.
+
+    A page repeating one already seen also ends the walk, with a warning: the
+    API is undocumented, and if it ever ignored the page number an uncapped
+    walk would otherwise never finish and hang the morning job.
+    """
+    seen: set = set()
+    start = 0
+    while max_pages is None or start < max_pages:
+        stop = start + 10 if max_pages is None else min(start + 10, max_pages)
         pages = await asyncio.gather(*(
             _page(client, token, category, period, p, date_from, date_to)
-            for p in range(start, min(start + 10, max_pages))))
-        exhausted = False
-        for page in pages:
+            for p in range(start, stop)))
+        for number, page in enumerate(pages, start):
             if not page:
-                exhausted = True
+                return
+            key = json.dumps(page, sort_keys=True)
+            if key in seen:
+                log.warning("Surfr %s/%s page %d repeats an earlier page; stopping",
+                            category, period, number)
+                return
+            seen.add(key)
             for item in page:
                 on_item(item)
-        if exhausted:
-            return
-    log.info("Surfr %s/%s scan truncated at %d pages", category, period, max_pages)
+        start = stop
+    log.warning("Surfr %s/%s scan truncated at %d pages", category, period, max_pages)
 
 
 def _item_user(item: dict) -> tuple:
@@ -103,9 +119,9 @@ async def day_stats(token: str, date_str: str, rider_ids: set) -> dict:
 
     async with httpx.AsyncClient() as client:
         await _scan(client, token, "height", "custom", collect("height_m"),
-                    MAX_DAY_PAGES, date_str, date_str)
+                    date_from=date_str, date_to=date_str)
         await _scan(client, token, "distance", "custom", collect("jump_distance_m"),
-                    MAX_DAY_PAGES, date_str, date_str)
+                    date_from=date_str, date_to=date_str)
     return stats
 
 

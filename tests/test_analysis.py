@@ -427,6 +427,60 @@ def test_surfr_day_stats_keeps_the_spot_of_the_highest_jump(monkeypatch):
                            "spot_name": "Engure", "spot_country": "LV"}}
 
 
+def test_surfr_day_stats_reads_the_whole_board(monkeypatch):
+    """A busy day's lowest jump sits deep in the board (2026-10-09: page 112 of
+    125); the day scan has no page cap, so it is still found."""
+    import asyncio
+
+    from kitebot import surfr
+
+    last = 130
+
+    async def fake_page(client, token, category, period, page, date_from=None, date_to=None):
+        if page > last:
+            return []
+        rider = 9 if page == last else 1000 + page
+        return [{"user": {"id": rider}, "value": 30.0 - page / 10, "spotName": "Pavilosta"}]
+
+    monkeypatch.setattr(surfr, "_page", fake_page)
+    stats = asyncio.run(surfr.day_stats("token", "2026-10-09", {"9"}))
+    assert stats["9"]["height_m"] == 30.0 - last / 10
+
+
+def test_surfr_scan_stops_when_the_api_repeats_a_page(monkeypatch):
+    """An API that ignored the page number would never return an empty page;
+    the uncapped walk must still end."""
+    import asyncio
+
+    from kitebot import surfr
+
+    async def fake_page(client, token, category, period, page, date_from=None, date_to=None):
+        return [{"user": {"id": 1}, "value": 5.0}]
+
+    monkeypatch.setattr(surfr, "_page", fake_page)
+    seen = []
+    asyncio.run(surfr._scan(None, "token", "height", "custom", seen.append))
+    assert len(seen) == 1
+
+
+def test_woo_day_stats_reads_the_whole_board(monkeypatch):
+    """Every page up to the reported size is fetched, however many there are."""
+    import asyncio
+
+    from kitebot import woo
+
+    size = 60 * woo.PAGE_SIZE
+
+    async def fake_page(client, token, feature, game_type, offset, start=None, end=None):
+        rider = "a" if offset == size - woo.PAGE_SIZE else f"x{offset}"
+        return {"status": "ok", "size": size,
+                "items": [{"user": {"id": rider}, "score": 2.8, "spot": "Pavilosta"}]}
+
+    monkeypatch.setattr(woo, "_page", fake_page)
+    stats = asyncio.run(woo.day_stats("token", 0, 86400, {"a"}))
+    assert stats["a"]["height_m"] == 2.8
+
+
 def test_daily_job_windless_morning_sends_only_yesterdays_riders(tmp_path, monkeypatch):
     """Nothing rideable today: no greeting and no empty forecast. Yesterday's
     riders still go out on their own, and with nobody to show the chat hears
