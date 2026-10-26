@@ -71,6 +71,9 @@ def rain_note(rain_mm: float) -> str:
     return " · 🌧 " + f"{rain_mm:.1f}".replace(".", ",") + " mm"
 
 
+FOIL_NOTE_LV = "tikai ar matraci"
+
+
 def format_window(w: Window, label: str) -> str:
     if round(w.min_speed) == round(w.max_speed):
         speed = f"{_fmt(w.min_speed)} {label}"
@@ -80,6 +83,7 @@ def format_window(w: Window, label: str) -> str:
         f"✅ {_day_lv(w.start)} · {w.start:%H:%M}–{w.end:%H:%M} · "
         f"{speed} (brāzmas {_fmt(w.max_gust)}) · {direction_word(w.direction)}"
         f"{rain_note(w.rain_mm)}"
+        f"{' · ' + FOIL_NOTE_LV if w.foil_only else ''}"
     )
 
 

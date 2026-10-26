@@ -38,6 +38,7 @@ class Window:
     max_gust: float
     direction: float        # circular mean over the window
     rain_mm: float = 0.0    # total precipitation over the window
+    foil_only: bool = False  # too light for the spot, enough for a foil kite
 
     @property
     def hours(self) -> float:
@@ -172,10 +173,13 @@ def circular_mean(degs: list) -> float:
     return mean if mean < 360 else 0.0
 
 
-def _rideable(point: HourPoint, spot, day_start: int, day_end: int) -> bool:
+def _rideable(point: HourPoint, spot, day_start: int, day_end: int,
+              min_wind: "float | None" = None) -> bool:
+    """min_wind overrides the spot's lower limit (the foil threshold)."""
+    low = spot.min_wind if min_wind is None else min_wind
     return (
         day_start <= point.time.hour < day_end
-        and spot.min_wind <= point.speed <= spot.max_wind
+        and low <= point.speed <= spot.max_wind
         and in_sectors(point.direction, spot.good_directions)
     )
 
@@ -214,15 +218,7 @@ def _close_run(run: list, min_hours: int, band: float) -> list:
     return [_window_from(s) for s in segments]
 
 
-def find_windows(points: list, spot, *, min_hours: int, day_start: int, day_end: int,
-                 band: float = 3.0) -> list:
-    """Group consecutive rideable hours into windows of at least `min_hours`.
-
-    Windows never span days because the day_start/day_end filter breaks the
-    hourly sequence overnight. `band` caps the wind spread reported as one
-    window (0 disables splitting).
-    """
-    good = [p for p in points if _rideable(p, spot, day_start, day_end)]
+def _windows_in(good: list, min_hours: int, band: float) -> list:
     windows: list = []
     run: list = []
     for point in good:
@@ -232,3 +228,28 @@ def find_windows(points: list, spot, *, min_hours: int, day_start: int, day_end:
         run.append(point)
     windows.extend(_close_run(run, min_hours, band))
     return windows
+
+
+def find_windows(points: list, spot, *, min_hours: int, day_start: int, day_end: int,
+                 band: float = 3.0, foil_min: float = 0.0) -> list:
+    """Group consecutive rideable hours into windows of at least `min_hours`.
+
+    Windows never span days because the day_start/day_end filter breaks the
+    hourly sequence overnight. `band` caps the wind spread reported as one
+    window (0 disables splitting).
+
+    `foil_min` above 0 (and below the spot's min_wind) adds foil-only windows:
+    hours outside the regular windows that a foil kite (Flysurfer and the like)
+    still rides from `foil_min` up — mostly wind just under the spot's limit,
+    plus regular hours too scattered to form a window of their own. Same
+    direction, daylight and `min_hours` rules; never split by `band`.
+    """
+    good = [p for p in points if _rideable(p, spot, day_start, day_end)]
+    windows = _windows_in(good, min_hours, band)
+    if not 0 < foil_min < spot.min_wind:
+        return windows
+    covered = {p.time for p in good for w in windows if w.start <= p.time < w.end}
+    light = [p for p in points if p.time not in covered
+             and _rideable(p, spot, day_start, day_end, min_wind=foil_min)]
+    foil = [replace(w, foil_only=True) for w in _windows_in(light, min_hours, 0)]
+    return sorted(windows + foil, key=lambda w: w.start)

@@ -43,6 +43,10 @@ Rust
 — nothing rideable
 ```
 
+Wind too light for a spot's `min_wind` but at least `foil_min_wind` (4.5 m/s
+by default) still makes a window, marked "tikai ar matraci" — rideable on a
+foil kite (Flysurfer and the like), not on an inflatable.
+
 ## Setup
 
 Requires Python 3.10+.
@@ -144,6 +148,7 @@ restart — friends keep their personal DM digests, but editing is locked down.
 | `forecast_days` | `3` | Days ahead to scan (1–7) |
 | `post_when_no_wind` | `false` | `false` = when nothing is rideable today, send only yesterday's rider recap — or nothing if nobody rode; `true` = post the full digest anyway |
 | `min_window_hours` | `2` | Minimum consecutive rideable hours |
+| `foil_min_wind` | per unit (4.5 m/s / 9 kn) | Lowest wind a foil kite (Flysurfer and the like) rides. Hours from here up to a spot's `min_wind` (and regular hours too scattered for a window) form extra windows marked "tikai ar matraci"; they count as wind for the digest and the forecast log, but not for `/route`. `0` disables |
 | `wind_band` | per unit (3 m/s / 6 kn) | Max wind spread reported as one line; bigger changes split the day into separate lines (different kite sizes). `0` disables |
 | `default_model` | `best_match` | Weather model: `best`, `gfs` (Windguru's GFS 13 km table), `icon`, `ecmwf`, `harmonie` (2 km, ~ Windguru's HARM-DK column; northern/central Europe, best for 1–2 days ahead); per-spot override via `model=` |
 | `default_cell` | `land` | Forecast grid cell for newly added spots: `sea` reads the wind over the water — set it if your spots are coastal (the example config does); `land` suits small lakes/lagoons |
@@ -189,12 +194,11 @@ windless morning the recap goes out on its own — no greeting, no empty
 forecast — so a session the forecast missed is never swallowed.
 
 When someone rode at one of your spots where that morning's digest showed no
-window, the recap opens with a line teasing the forecast, rotating daily
-(e.g. "Kam vakar nebija, ko darīt:", "📡 Kļūda 404: bezvējš nav atrasts.").
-The daily job records each morning's per-spot verdict in
+window, a "🙈 Vakar prognoze kļūdījās" section above the riders lists those
+spots. The daily job records each morning's per-spot verdict in
 `data/forecast_log.json` (last 7 days) for this. Only a session the app places
 at one of your spots counts: riders abroad, or whose app names no spot, never
-trigger it, and the first morning after an upgrade has nothing recorded yet.
+count, and the first morning after an upgrade has nothing recorded yet.
 App spot names are matched by whole words, so WOO's "Engures Mols" is your
 "Engure" but a short name abroad like "Sal" is not "Salacgrīva".
 
