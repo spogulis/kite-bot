@@ -1411,16 +1411,21 @@ class Recap:
     def _quirk_html(self) -> str:
         return f"<i>{html.escape(self.quirk)}</i>"
 
+    def _riders(self) -> str:
+        """The rider lines, each set off by an empty line: a line wraps on a
+        phone and would otherwise run into the next rider's."""
+        return "\n\n".join(self.lines)
+
     def in_digest(self) -> str:
         """The section under a forecast: title, the quirk if any, riders."""
         head = [RECAP_TITLE_LV] + ([self._quirk_html()] if self.quirk else [])
-        return "\n".join(head + self.lines)
+        return "\n".join(head) + "\n\n" + self._riders()
 
     def on_its_own(self) -> str:
         """A windless morning's whole message: no greeting and no empty
         forecast, just the quirk (or the title when nobody fooled it) and the
         riders."""
-        return "\n".join([self._quirk_html() if self.quirk else RECAP_TITLE_LV] + self.lines)
+        return (self._quirk_html() if self.quirk else RECAP_TITLE_LV) + "\n\n" + self._riders()
 
 
 # /woorider search results awaiting an admin's button tap; woo_id -> candidate

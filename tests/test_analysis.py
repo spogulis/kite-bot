@@ -538,11 +538,11 @@ def test_daily_job_windless_morning_sends_only_yesterdays_riders(tmp_path, monke
     today = datetime.now(ZoneInfo("Europe/Riga")).date().isoformat()
     assert json.loads((tmp_path / "forecast_log.json").read_text()) == {today: {"Engure": False}}
 
-    assert morning(no_wind, someone_rode) == ["<i>Kam vakar nebija, ko darīt:</i>\n🏄 Alfa — ⬆️ 7,6 m"]
+    assert morning(no_wind, someone_rode) == ["<i>Kam vakar nebija, ko darīt:</i>\n\n🏄 Alfa — ⬆️ 7,6 m"]
 
     [text] = morning(windy, someone_rode)
     assert text.startswith("Labrīt, kaiteri!")
-    assert text.endswith("🏆 <b>Vakardienas varoņi</b>\n<i>Kam vakar nebija, ko darīt:</i>\n"
+    assert text.endswith("🏆 <b>Vakardienas varoņi</b>\n<i>Kam vakar nebija, ko darīt:</i>\n\n"
                          "🏄 Alfa — ⬆️ 7,6 m")
 
     monkeypatch.setattr(config, "load_settings", lambda: Settings(post_when_no_wind=True))
@@ -553,7 +553,17 @@ def test_daily_job_windless_morning_sends_only_yesterdays_riders(tmp_path, monke
 def test_recap_without_a_quirk_keeps_its_title_on_a_windless_morning():
     from kitebot.handlers import Recap
     assert Recap(lines=["🏄 Alfa — ⬆️ 7,6 m"]).on_its_own() == (
-        "🏆 <b>Vakardienas varoņi</b>\n🏄 Alfa — ⬆️ 7,6 m")
+        "🏆 <b>Vakardienas varoņi</b>\n\n🏄 Alfa — ⬆️ 7,6 m")
+
+
+def test_recap_sets_each_rider_off_with_an_empty_line():
+    """Rider lines wrap on a phone; without a gap they run together."""
+    from kitebot.handlers import Recap
+    recap = Recap(lines=["🏄 Alfa — ⬆️ 7,6 m", "🏄 Beta — ⬆️ 5,1 m"], quirk="Kam vakar nebija, ko darīt:")
+    assert recap.in_digest() == ("🏆 <b>Vakardienas varoņi</b>\n<i>Kam vakar nebija, ko darīt:</i>\n\n"
+                                 "🏄 Alfa — ⬆️ 7,6 m\n\n🏄 Beta — ⬆️ 5,1 m")
+    assert recap.on_its_own() == ("<i>Kam vakar nebija, ko darīt:</i>\n\n"
+                                  "🏄 Alfa — ⬆️ 7,6 m\n\n🏄 Beta — ⬆️ 5,1 m")
 
 
 def test_fooled_the_forecast_counts_only_home_spots_without_a_window():
@@ -569,8 +579,26 @@ def test_fooled_the_forecast_counts_only_home_spots_without_a_window():
     assert not fooled({"height_m": 3.4, "spot_name": "Ria de Alvor",   # abroad
                        "spot_country": "PT"}, {"Engure": False, "Bērzciems": False})
     assert not fooled({"distance_m": 12000.0})                         # no spot, wind somewhere
-    assert fooled({"distance_m": 12000.0}, {"Engure": False, "Bērzciems": False})
+    # no spot even on an all-calm morning: nobody is known to have ridden at our spots
+    assert not fooled({"distance_m": 12000.0}, {"Engure": False, "Bērzciems": False})
     assert not fooled({"height_m": 7.6, "spot_name": "Engures Mols"}, {})  # morning not recorded
+
+
+def test_fooled_the_forecast_ignores_a_spot_abroad_whose_name_is_part_of_ours():
+    """WOO names no country, so a short spot name abroad must not be read as a
+    home spot it happens to be a fragment of."""
+    from kitebot.woo import fooled_the_forecast
+    riders = [{"name": "Alfa", "record_height_m": 9.0, "ids": {"woo": "a"}}]
+    calm = {"Salacgrīva": False, "Engures mols": False}
+
+    def fooled(spot_name):
+        return fooled_the_forecast(riders, {"woo:a": {"height_m": 7.6, "spot_name": spot_name}}, calm)
+
+    assert not fooled("Sal")                 # Cape Verde, not Salacgrīva
+    assert not fooled("Mol")
+    assert fooled("Salacgriva")
+    assert fooled("Salacgrīvas pludmale")
+    assert fooled("Engure")                  # a shorter spelling of ours still counts
 
 
 def test_forecast_log_keeps_the_last_week(tmp_path, monkeypatch):

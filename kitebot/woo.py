@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import unicodedata
 
 import httpx
@@ -180,17 +181,37 @@ def _jump_spot(sources: dict) -> tuple:
     return "", ""
 
 
+def _words(text: str) -> list:
+    return re.findall(r"\w+", normalize(text))
+
+
+def _same_word(a: str, b: str) -> bool:
+    """Equal, or the longer word starts with the shorter (a case ending:
+    "engures" is "engure"). A stem under four letters must match exactly."""
+    short, long_ = sorted((a, b), key=len)
+    return short == long_ or (len(short) >= 4 and long_.startswith(short))
+
+
+def _contains_words(words: list, part: list) -> bool:
+    """Whether part's words run, in order, somewhere in words."""
+    n = len(part)
+    return any(all(_same_word(w, p) for w, p in zip(words[i:i + n], part))
+               for i in range(len(words) - n + 1))
+
+
 def _match_spot(name: str, spot_names) -> "str | None":
     """The configured spot an app's spot name refers to, if any.
 
     Matched loosely (diacritics folded, either side may contain the other)
     because each app spells spots its own way — WOO's "Engures Mols" is the
-    configured "Engure".
+    configured "Engure". Only whole words count, though: a short name abroad
+    ("Sal", Cape Verde) must not pass for a home spot ("Salacgrīva").
     """
-    needle = normalize(name)
+    words = _words(name)
     for spot in spot_names or ():
-        known = normalize(spot)
-        if known and (needle == known or needle in known or known in needle):
+        known = _words(spot)
+        if words and known and (_contains_words(words, known)
+                                or _contains_words(known, words)):
             return spot
     return None
 
@@ -210,26 +231,18 @@ def _spot_label(sources: dict, known_spots) -> str:
 
 
 def fooled_the_forecast(riders: list, stats: dict, had_window: dict) -> bool:
-    """True when someone rode where that morning's digest promised no wind.
+    """True when someone rode at a configured spot where that morning's digest
+    promised no wind.
 
     had_window: {configured spot name: whether the digest showed a window
-    there}, as the daily job recorded it. A rider counts when their best jump
-    was at one of those spots and it had no window; a rider no app places
-    anywhere counts only if no spot had one. Riders abroad never count — the
-    forecast was never about their spot.
+    there}, as the daily job recorded it. A rider counts only when their best
+    jump was at one of those spots and it had no window. Riders abroad and
+    riders no app places anywhere never count — the forecast can't be proven
+    wrong about a spot it never covered, or a session without a spot.
     """
-    if not had_window:
-        return False
     for rider in riders:
-        sources = _sources(rider, stats)
-        if not sources:
-            continue
-        name, _ = _jump_spot(sources)
-        if not name:
-            if not any(had_window.values()):
-                return True
-            continue
-        spot = _match_spot(name, had_window)
+        name, _ = _jump_spot(_sources(rider, stats))
+        spot = _match_spot(name, had_window) if name else None
         if spot is not None and not had_window[spot]:
             return True
     return False
