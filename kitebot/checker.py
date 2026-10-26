@@ -12,7 +12,7 @@ import logging
 import httpx
 
 from .analysis import find_windows
-from .config import Settings, effective_band
+from .config import Settings, effective_band, effective_foil_min
 from .forecast import (
     INTERACTIVE_DELAYS, ROBUST_DELAYS, ForecastError, fetch_hours, fetch_hours_metno,
 )
@@ -58,6 +58,7 @@ async def gather_results(spots: list, settings: Settings, robust: bool = False,
                 day_start=settings.day_start_hour,
                 day_end=settings.day_end_hour,
                 band=effective_band(settings),
+                foil_min=effective_foil_min(settings),
             )
             return SpotResult(spot=spot, windows=windows)
 

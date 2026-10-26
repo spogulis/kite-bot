@@ -43,6 +43,9 @@ _KNOTS_TO = {"kn": 1.0, "ms": 0.514444, "kmh": 1.852, "mph": 1.150779}
 # Default max wind spread reported as a single window line, per unit — a
 # bigger change within the day means a different kite and gets its own line.
 UNIT_BAND = {"kn": 6.0, "ms": 3.0, "kmh": 11.0, "mph": 7.0}
+# Default lowest mean wind a foil kite (Flysurfer and the like) still rides,
+# per unit — wind between this and a spot's min_wind is "tikai ar matraci".
+UNIT_FOIL_MIN = {"kn": 9.0, "ms": 4.5, "kmh": 16.0, "mph": 10.0}
 _UNIT_ALIASES = {
     "kn": "kn", "knots": "kn", "kt": "kn", "kts": "kn",
     "ms": "ms", "m/s": "ms",
@@ -175,6 +178,7 @@ class Settings:
     day_start_hour: int = 8
     day_end_hour: int = 20
     wind_band: float = 0.0  # 0 = per-unit default from UNIT_BAND
+    foil_min_wind: "float | None" = None  # None = per-unit UNIT_FOIL_MIN; 0 = off
     admin_user_ids: list = field(default_factory=list)
     woo_token: str = ""  # empty = use the built-in anonymous leaderboard token
     surfr_token: str = ""  # empty = use the built-in public leaderboard token
@@ -200,6 +204,8 @@ def load_settings() -> Settings:
     s.post_when_no_wind = bool(raw.get("post_when_no_wind", s.post_when_no_wind))
     s.min_window_hours = max(1, int(raw.get("min_window_hours", s.min_window_hours)))
     s.wind_band = max(0.0, float(raw.get("wind_band", 0) or 0))
+    if raw.get("foil_min_wind") is not None:
+        s.foil_min_wind = max(0.0, float(raw["foil_min_wind"]))
     s.day_start_hour = min(23, max(0, int(raw.get("day_start_hour", s.day_start_hour))))
     s.day_end_hour = min(24, max(s.day_start_hour + 1, int(raw.get("day_end_hour", s.day_end_hour))))
     s.admin_user_ids = [int(x) for x in raw.get("admin_user_ids") or []]
@@ -218,6 +224,12 @@ def load_settings() -> Settings:
 
 def effective_band(settings: "Settings") -> float:
     return settings.wind_band or UNIT_BAND.get(settings.wind_unit, 3.0)
+
+
+def effective_foil_min(settings: "Settings") -> float:
+    if settings.foil_min_wind is None:
+        return UNIT_FOIL_MIN.get(settings.wind_unit, 0.0)
+    return settings.foil_min_wind
 
 
 def load_spots(settings: "Settings | None" = None) -> list:

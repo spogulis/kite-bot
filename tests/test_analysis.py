@@ -123,6 +123,86 @@ def test_window_splits_by_wind_band():
     assert len(result) == 1
 
 
+def spans(result):
+    return [(w.start.hour, w.end.hour, w.foil_only) for w in result]
+
+
+def test_foil_window_when_too_light_for_the_spot():
+    light = [hp(h, speed=10) for h in range(10, 14)]  # spot needs 12
+    assert windows(light, spot()) == []
+    assert spans(windows(light, spot(), foil_min=9)) == [(10, 14, True)]
+    # foils need wind too
+    assert windows([hp(h, speed=8) for h in range(10, 14)], spot(), foil_min=9) == []
+    # same direction rule as any window
+    assert windows([hp(h, speed=10, direction=45) for h in range(10, 14)],
+                   spot(), foil_min=9) == []
+
+
+def test_foil_windows_fill_around_regular_ones_without_touching_them():
+    # light morning, a proper window, then a single light hour (too short)
+    points = ([hp(8, speed=10), hp(9, speed=10)] + [hp(h) for h in range(10, 14)]
+              + [hp(14, speed=10)])
+    assert spans(windows(points, spot(), foil_min=9)) == [(8, 10, True), (10, 14, False)]
+    assert spans(windows(points, spot())) == [(10, 14, False)]
+
+
+def test_foil_window_covers_wind_hovering_at_the_spot_limit():
+    # 13/11/13/11 kn: never two regular hours in a row, but a foil rides all four
+    points = [hp(h, speed=13 if h % 2 else 11) for h in range(10, 14)]
+    assert windows(points, spot()) == []
+    assert spans(windows(points, spot(), foil_min=9)) == [(10, 14, True)]
+
+
+def test_foil_min_at_or_above_the_spot_limit_adds_nothing():
+    light = [hp(h, speed=10) for h in range(10, 14)]
+    assert windows(light, spot(min_wind=9), foil_min=9) == windows(light, spot(min_wind=9))
+    assert windows(light, spot(), foil_min=0) == []
+
+
+def test_foil_window_is_marked_in_the_forecast_line():
+    from kitebot.messages import format_window
+    [foil] = windows([hp(h, speed=10) for h in range(10, 14)], spot(), foil_min=9)
+    [regular] = windows([hp(h) for h in range(10, 14)], spot(), foil_min=9)
+    assert format_window(foil, "kn").endswith(" · ziemeļrietumu vējš · tikai ar matraci")
+    assert "matraci" not in format_window(regular, "kn")
+
+
+def test_foil_threshold_defaults_per_unit_and_can_be_turned_off(tmp_path, monkeypatch):
+    from kitebot import config
+    from kitebot.config import Settings, effective_foil_min
+    assert effective_foil_min(Settings()) == 4.5
+    assert effective_foil_min(Settings(wind_unit="kn")) == 9.0
+    monkeypatch.setattr(config, "CONFIG_FILE", tmp_path / "config.yaml")
+    (tmp_path / "config.yaml").write_text("wind_unit: ms\nfoil_min_wind: 0\n")
+    assert effective_foil_min(config.load_settings()) == 0
+    (tmp_path / "config.yaml").write_text("wind_unit: ms\nfoil_min_wind: 5\n")
+    assert effective_foil_min(config.load_settings()) == 5.0
+
+
+def test_route_skips_foil_only_windows(monkeypatch):
+    import asyncio
+    from datetime import timedelta
+
+    from kitebot import config, handlers
+    from kitebot.analysis import Window
+    from kitebot.config import Settings
+    from kitebot.messages import SpotResult
+
+    settings = Settings()
+    noon = datetime.now(ZoneInfo(settings.timezone)).replace(
+        hour=12, minute=0, second=0, microsecond=0) + timedelta(days=1)
+    foil = Window(start=noon, end=noon + timedelta(hours=3), min_speed=5, max_speed=5.5,
+                  max_gust=8, direction=45, foil_only=True)
+
+    async def gather(spots, settings):
+        return [SpotResult(spot=s, windows=[foil]) for s in spots]
+
+    monkeypatch.setattr(config, "load_spots", lambda settings=None: [spot(name="Engure")])
+    monkeypatch.setattr(handlers, "gather_results", gather)
+    text = asyncio.run(handlers._route_text(settings, 1, None))
+    assert "nevienā spotā nav braucama vēja" in text
+
+
 def test_spot_defaults_follow_unit():
     s = Spot.from_dict({"name": "X", "lat": 1, "lon": 2}, unit="ms")
     assert (s.min_wind, s.max_wind) == (6.0, 20.0)
@@ -516,7 +596,7 @@ def test_daily_job_windless_morning_sends_only_yesterdays_riders(tmp_path, monke
         return [SpotResult(spot=s, windows=[w]) for s in spots]
 
     async def someone_rode(settings, update_records):
-        return (handlers.Recap(lines=["🏄 Alfa — ⬆️ 7,6 m"], quirk="Kam vakar nebija, ko darīt:"),
+        return (handlers.Recap(lines=["🏄 Alfa — ⬆️ 7,6 m"], missed=["Engure"]),
                 "sadaļa iekļauta")
 
     async def nobody_rode(settings, update_records):
@@ -538,67 +618,82 @@ def test_daily_job_windless_morning_sends_only_yesterdays_riders(tmp_path, monke
     today = datetime.now(ZoneInfo("Europe/Riga")).date().isoformat()
     assert json.loads((tmp_path / "forecast_log.json").read_text()) == {today: {"Engure": False}}
 
-    assert morning(no_wind, someone_rode) == ["<i>Kam vakar nebija, ko darīt:</i>\n\n🏄 Alfa — ⬆️ 7,6 m"]
+    recap = ("🙈 <b>Vakar prognoze kļūdījās</b>\n📍 Engure\n\n"
+             "🏆 <b>Vakardienas varoņi</b>\n\n🏄 Alfa — ⬆️ 7,6 m")
+    assert morning(no_wind, someone_rode) == [recap]
 
     [text] = morning(windy, someone_rode)
     assert text.startswith("Labrīt, kaiteri!")
-    assert text.endswith("🏆 <b>Vakardienas varoņi</b>\n<i>Kam vakar nebija, ko darīt:</i>\n\n"
-                         "🏄 Alfa — ⬆️ 7,6 m")
+    assert text.endswith("\n\n" + recap)
 
     monkeypatch.setattr(config, "load_settings", lambda: Settings(post_when_no_wind=True))
     [text] = morning(no_wind, nobody_rode)
     assert "Nevienā spotā nav braucama vēja." in text
 
 
-def test_recap_without_a_quirk_keeps_its_title_on_a_windless_morning():
+def test_recap_without_missed_spots_is_just_the_riders():
     from kitebot.handlers import Recap
-    assert Recap(lines=["🏄 Alfa — ⬆️ 7,6 m"]).on_its_own() == (
+    assert Recap(lines=["🏄 Alfa — ⬆️ 7,6 m"]).to_html() == (
         "🏆 <b>Vakardienas varoņi</b>\n\n🏄 Alfa — ⬆️ 7,6 m")
 
 
 def test_recap_sets_each_rider_off_with_an_empty_line():
     """Rider lines wrap on a phone; without a gap they run together."""
     from kitebot.handlers import Recap
-    recap = Recap(lines=["🏄 Alfa — ⬆️ 7,6 m", "🏄 Beta — ⬆️ 5,1 m"], quirk="Kam vakar nebija, ko darīt:")
-    assert recap.in_digest() == ("🏆 <b>Vakardienas varoņi</b>\n<i>Kam vakar nebija, ko darīt:</i>\n\n"
-                                 "🏄 Alfa — ⬆️ 7,6 m\n\n🏄 Beta — ⬆️ 5,1 m")
-    assert recap.on_its_own() == ("<i>Kam vakar nebija, ko darīt:</i>\n\n"
-                                  "🏄 Alfa — ⬆️ 7,6 m\n\n🏄 Beta — ⬆️ 5,1 m")
+    recap = Recap(lines=["🏄 Alfa — ⬆️ 7,6 m", "🏄 Beta — ⬆️ 5,1 m"])
+    assert recap.to_html() == ("🏆 <b>Vakardienas varoņi</b>\n\n"
+                               "🏄 Alfa — ⬆️ 7,6 m\n\n🏄 Beta — ⬆️ 5,1 m")
 
 
-def test_fooled_the_forecast_counts_only_home_spots_without_a_window():
-    from kitebot.woo import fooled_the_forecast
+def test_recap_lists_every_missed_spot_in_its_own_section():
+    from kitebot.handlers import Recap
+    assert Recap(lines=["🏄 Alfa — ⬆️ 7,6 m"], missed=["Engure", "R&D"]).to_html() == (
+        "🙈 <b>Vakar prognoze kļūdījās</b>\n📍 Engure\n📍 R&amp;D\n\n"
+        "🏆 <b>Vakardienas varoņi</b>\n\n🏄 Alfa — ⬆️ 7,6 m")
+
+
+def test_missed_spots_lists_home_spots_ridden_without_a_window():
+    from kitebot.woo import missed_spots
     riders = [{"name": "Alfa", "record_height_m": 9.0, "ids": {"woo": "a"}}]
     verdict = {"Engure": False, "Bērzciems": True}
 
-    def fooled(day, had_window=verdict):
-        return fooled_the_forecast(riders, {"woo:a": day}, had_window)
+    def missed(day, had_window=verdict):
+        return missed_spots(riders, {"woo:a": day}, had_window)
 
-    assert fooled({"height_m": 7.6, "spot_name": "Engures Mols"})      # calm promised there
-    assert not fooled({"height_m": 7.6, "spot_name": "Berzciems"})     # the forecast was right
-    assert not fooled({"height_m": 3.4, "spot_name": "Ria de Alvor",   # abroad
-                       "spot_country": "PT"}, {"Engure": False, "Bērzciems": False})
-    assert not fooled({"distance_m": 12000.0})                         # no spot, wind somewhere
-    # no spot even on an all-calm morning: nobody is known to have ridden at our spots
-    assert not fooled({"distance_m": 12000.0}, {"Engure": False, "Bērzciems": False})
-    assert not fooled({"height_m": 7.6, "spot_name": "Engures Mols"}, {})  # morning not recorded
+    assert missed({"height_m": 7.6, "spot_name": "Engures Mols"}) == ["Engure"]  # calm promised
+    assert missed({"height_m": 7.6, "spot_name": "Berzciems"}) == []  # the forecast was right
+    calm = {"Engure": False, "Bērzciems": False}
+    assert missed({"height_m": 3.4, "spot_name": "Ria de Alvor",       # abroad
+                   "spot_country": "PT"}, calm) == []
+    assert missed({"distance_m": 12000.0}, calm) == []                 # no spot to name
+    assert missed({"height_m": 7.6, "spot_name": "Engures Mols"}, {}) == []  # not recorded
 
 
-def test_fooled_the_forecast_ignores_a_spot_abroad_whose_name_is_part_of_ours():
+def test_missed_spots_follow_digest_order_without_repeats():
+    from kitebot.woo import missed_spots
+    riders = [{"name": n, "record_height_m": 0, "ids": {"woo": n}} for n in "abc"]
+    stats = {"woo:a": {"height_m": 5.0, "spot_name": "Bērzciems"},
+             "woo:b": {"height_m": 6.0, "spot_name": "Engures Mols"},
+             "woo:c": {"height_m": 4.0, "spot_name": "Engure"}}
+    had_window = {"Engure": False, "Vecāķi": False, "Bērzciems": False}
+    assert missed_spots(riders, stats, had_window) == ["Engure", "Bērzciems"]
+
+
+def test_missed_spots_ignore_a_spot_abroad_whose_name_is_part_of_ours():
     """WOO names no country, so a short spot name abroad must not be read as a
     home spot it happens to be a fragment of."""
-    from kitebot.woo import fooled_the_forecast
+    from kitebot.woo import missed_spots
     riders = [{"name": "Alfa", "record_height_m": 9.0, "ids": {"woo": "a"}}]
     calm = {"Salacgrīva": False, "Engures mols": False}
 
-    def fooled(spot_name):
-        return fooled_the_forecast(riders, {"woo:a": {"height_m": 7.6, "spot_name": spot_name}}, calm)
+    def missed(spot_name):
+        return missed_spots(riders, {"woo:a": {"height_m": 7.6, "spot_name": spot_name}}, calm)
 
-    assert not fooled("Sal")                 # Cape Verde, not Salacgrīva
-    assert not fooled("Mol")
-    assert fooled("Salacgriva")
-    assert fooled("Salacgrīvas pludmale")
-    assert fooled("Engure")                  # a shorter spelling of ours still counts
+    assert missed("Sal") == []                 # Cape Verde, not Salacgrīva
+    assert missed("Mol") == []
+    assert missed("Salacgriva") == ["Salacgrīva"]
+    assert missed("Salacgrīvas pludmale") == ["Salacgrīva"]
+    assert missed("Engure") == ["Engures mols"]  # a shorter spelling of ours still counts
 
 
 def test_forecast_log_keeps_the_last_week(tmp_path, monkeypatch):
@@ -612,9 +707,10 @@ def test_forecast_log_keeps_the_last_week(tmp_path, monkeypatch):
     assert days["2026-09-04"] == {"Bērzciems": True}
 
 
-def test_recap_gets_a_quirk_when_someone_rode_where_calm_was_forecast(tmp_path, monkeypatch):
+def test_recap_names_the_spot_where_someone_rode_against_the_forecast(tmp_path, monkeypatch):
     """The Engure case: yesterday's digest showed no window at Engure, yet a
-    rider jumped there — the recap says so. Where the forecast was right, no quirk."""
+    rider jumped there — the recap lists Engure. Where the forecast was right,
+    nothing is listed."""
     import asyncio
 
     from kitebot import config, handlers, woo
@@ -637,8 +733,8 @@ def test_recap_gets_a_quirk_when_someone_rode_where_calm_was_forecast(tmp_path, 
         recap, _ = asyncio.run(handlers.build_woo_section(settings, update_records=False))
         return recap
 
-    assert recap_for("Engures Mols").quirk in handlers.FOOLED_FORECAST_LV
-    assert recap_for("Bērzciems").quirk == ""
+    assert recap_for("Engures Mols").missed == ["Engure"]
+    assert recap_for("Bērzciems").missed == []
 
 
 def test_digest_collapses_when_nothing_rideable():

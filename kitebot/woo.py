@@ -230,9 +230,9 @@ def _spot_label(sources: dict, known_spots) -> str:
     return f"{name} ({country})"
 
 
-def fooled_the_forecast(riders: list, stats: dict, had_window: dict) -> bool:
-    """True when someone rode at a configured spot where that morning's digest
-    promised no wind.
+def missed_spots(riders: list, stats: dict, had_window: dict) -> list:
+    """Configured spots where someone rode although that morning's digest
+    showed no window there, in digest order.
 
     had_window: {configured spot name: whether the digest showed a window
     there}, as the daily job recorded it. A rider counts only when their best
@@ -240,12 +240,13 @@ def fooled_the_forecast(riders: list, stats: dict, had_window: dict) -> bool:
     riders no app places anywhere never count — the forecast can't be proven
     wrong about a spot it never covered, or a session without a spot.
     """
+    missed = set()
     for rider in riders:
         name, _ = _jump_spot(_sources(rider, stats))
         spot = _match_spot(name, had_window) if name else None
         if spot is not None and not had_window[spot]:
-            return True
-    return False
+            missed.add(spot)
+    return [spot for spot in had_window if spot in missed]
 
 
 def summarize(riders: list, stats: dict, known_spots=()) -> tuple:

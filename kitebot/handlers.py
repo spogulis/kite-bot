@@ -8,7 +8,7 @@ import html
 import logging
 import secrets
 import shlex
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -390,7 +390,9 @@ async def _route_text(settings, offset: int, prefer: "str | None",
     now = datetime.now(tz)
     target = (now + timedelta(days=offset)).date()
     day_lv = ROUTE_DAYS_LV[offset] if offset < len(ROUTE_DAYS_LV) else target.isoformat()
-    items = [(r.spot, w) for r in results for w in r.windows if w.start.date() == target]
+    # foil-only windows stay out: the route and kite picks assume the quiver
+    items = [(r.spot, w) for r in results for w in r.windows
+             if w.start.date() == target and not w.foil_only]
     if offset == 0:
         items = [(spot, w2) for spot, w in items for w2 in clip_past([w], now)]
     if dry:
@@ -1390,42 +1392,31 @@ DAILY_TITLE_LV = "Ikdienas kaita prognoze"
 # --- WOO rider recap ------------------------------------------------------------
 
 RECAP_TITLE_LV = "🏆 <b>Vakardienas varoņi</b>"
-
-# Heads the recap when someone rode where the morning's digest said there was
-# no wind. Picked by date, so consecutive mornings differ and /testdigest
-# previews the very line the real post will carry.
-FOOLED_FORECAST_LV = (
-    "Izskatās, ka kāds matraci atrullēja:",
-    "Kam vakar nebija, ko darīt:",
-    "📡 Kļūda 404: bezvējš nav atrasts.",
-    "🏅 Bonusa punkti par prognozes ignorēšanu:",
-)
+# Heads the list of spots where someone rode although yesterday's digest
+# showed no window there.
+MISSED_TITLE_LV = "🙈 <b>Vakar prognoze kļūdījās</b>"
 
 
 @dataclass
 class Recap:
     """Yesterday's riders, ready for either kind of morning message."""
-    lines: list      # rider lines, HTML-escaped, ranked
-    quirk: str = ""  # a FOOLED_FORECAST_LV line when someone beat the forecast
-
-    def _quirk_html(self) -> str:
-        return f"<i>{html.escape(self.quirk)}</i>"
+    lines: list                                 # rider lines, HTML-escaped, ranked
+    missed: list = field(default_factory=list)  # spots ridden against the forecast
 
     def _riders(self) -> str:
         """The rider lines, each set off by an empty line: a line wraps on a
         phone and would otherwise run into the next rider's."""
         return "\n\n".join(self.lines)
 
-    def in_digest(self) -> str:
-        """The section under a forecast: title, the quirk if any, riders."""
-        head = [RECAP_TITLE_LV] + ([self._quirk_html()] if self.quirk else [])
-        return "\n".join(head) + "\n\n" + self._riders()
-
-    def on_its_own(self) -> str:
-        """A windless morning's whole message: no greeting and no empty
-        forecast, just the quirk (or the title when nobody fooled it) and the
-        riders."""
-        return (self._quirk_html() if self.quirk else RECAP_TITLE_LV) + "\n\n" + self._riders()
+    def to_html(self) -> str:
+        """The wrong-forecast spots as their own section, when there are any,
+        then the riders. Used as is under a forecast and, on a windless
+        morning, as the whole message."""
+        riders = RECAP_TITLE_LV + "\n\n" + self._riders()
+        if not self.missed:
+            return riders
+        spots = [f"{woo.SPOT_ICON} {html.escape(name)}" for name in self.missed]
+        return "\n".join([MISSED_TITLE_LV] + spots) + "\n\n" + riders
 
 
 # /woorider search results awaiting an admin's button tap; woo_id -> candidate
@@ -1459,8 +1450,8 @@ def _today(settings):
 async def build_woo_section(settings, update_records: bool) -> tuple:
     """(Recap | None, latvian_status) for the 'yesterday's heroes' part.
     Merges WOO and Surfr riders; any provider failure is logged and skipped.
-    The recap carries a quirky line when someone rode where yesterday
-    morning's digest found no wind (see config.record_forecast)."""
+    The recap lists the spots where someone rode although yesterday morning's
+    digest found no wind there (see config.record_forecast)."""
     riders = config.load_riders()
     if not riders:
         return None, "nav pievienotu braucēju (/woorider, /surfrider)"
@@ -1492,10 +1483,8 @@ async def build_woo_section(settings, update_records: bool) -> tuple:
         config.save_riders(updated)
     if not lines:
         return None, f"neviens no {len(riders)} braucējiem vakar nebrauca, sadaļu nerādu{failure_note}"
-    quirk = ""
-    if woo.fooled_the_forecast(riders, stats, config.load_forecast_log().get(date_str, {})):
-        quirk = FOOLED_FORECAST_LV[_today(settings).toordinal() % len(FOOLED_FORECAST_LV)]
-    recap = Recap(lines=[html.escape(line) for line in lines], quirk=quirk)
+    missed = woo.missed_spots(riders, stats, config.load_forecast_log().get(date_str, {}))
+    recap = Recap(lines=[html.escape(line) for line in lines], missed=missed)
     return recap, "sadaļa iekļauta" + failure_note
 
 
@@ -1809,8 +1798,8 @@ def _morning_text(results: list, settings, recap: "Recap | None") -> "str | None
     out on its own, so a session the forecast missed is never swallowed.
     """
     if any_windows(results) or settings.post_when_no_wind:
-        return _daily_text(results, settings, extra=recap.in_digest() if recap else None)
-    return recap.on_its_own() if recap else None
+        return _daily_text(results, settings, extra=recap.to_html() if recap else None)
+    return recap.to_html() if recap else None
 
 
 async def cmd_testdigest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

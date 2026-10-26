@@ -14,6 +14,8 @@ daily_greeting: "Labrīt, kaiteri!"   # first line of the daily post; "" disable
 forecast_days: 3             # days ahead to scan (1-7)
 post_when_no_wind: false     # windless morning: only yesterday's riders, if any; true = full digest
 min_window_hours: 2          # conditions must hold at least this many hours in a row
+# foil_min_wind: 4.5         # wind a foil kite still rides (default per unit); from here
+                             # up to a spot's min_wind shows as "tikai ar matraci"; 0 = off
 # wind_band: 3               # max wind spread (in wind_unit) shown as one line; a bigger
                              # change splits the day into separate lines (different kite sizes)
 day_start_hour: 8            # only count hours between these two (local time at the spot)
