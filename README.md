@@ -192,13 +192,18 @@ When someone rode at one of your spots where that morning's digest showed no
 window, the recap opens with a line teasing the forecast, rotating daily
 (e.g. "Kam vakar nebija, ko darīt:", "📡 Kļūda 404: bezvējš nav atrasts.").
 The daily job records each morning's per-spot verdict in
-`data/forecast_log.json` (last 7 days) for this; riders abroad never trigger
-it, and the first morning after an upgrade has nothing recorded yet.
+`data/forecast_log.json` (last 7 days) for this. Only a session the app places
+at one of your spots counts: riders abroad, or whose app names no spot, never
+trigger it, and the first morning after an upgrade has nothing recorded yet.
+App spot names are matched by whole words, so WOO's "Engures Mols" is your
+"Engure" but a short name abroad like "Sal" is not "Salacgrīva".
 
-Each metric is marked with an icon instead of a word, always in this order:
+Each rider gets their own line, with an empty line between riders. Each metric
+is marked with an icon instead of a word, always in this order:
 
 ```
 🏄 Kristaps Liepiņš — ⬆️ 11,7 m · ↔️ 30,0 m · 🛣️ 22,1 km · 🪁 12m Duotone Rebel SLS · 📍 Engures Mols
+
 🏄 Kristina — ⬆️ 3,4 m · ↔️ 35,0 m · 📍 Ria de Alvor (PT)
 ```
 
