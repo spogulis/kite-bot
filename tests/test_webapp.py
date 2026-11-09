@@ -408,3 +408,182 @@ def test_webapp_settings_parse(tmp_path, monkeypatch):
 def test_webapp_settings_reject_bad_values(tmp_path, monkeypatch, text):
     with pytest.raises(SystemExit):
         _settings_from(tmp_path, monkeypatch, text)
+
+
+# --- phase 2: route planner and profile ----------------------------------------------
+
+from kitebot import routes  # noqa: E402
+from kitebot.analysis import Window  # noqa: E402
+
+SPOT_A = Spot(name="Alfa", lat=57.16, lon=23.23)
+SPOT_B = Spot(name="Bravo", lat=57.335, lon=23.13)   # ~25 km north
+NOW = datetime(2026, 11, 9, 7, 0, tzinfo=RIGA)
+TOMORROW = NOW + timedelta(days=1)
+PROFILE = {"weight_kg": 85, "quiver": [12, 9, 7]}
+
+
+def window(start_h, end_h, lo, hi, gust, direction=315, rain=0.0):
+    return Window(start=TOMORROW.replace(hour=start_h), end=TOMORROW.replace(hour=end_h),
+                  min_speed=lo, max_speed=hi, max_gust=gust, direction=direction, rain_mm=rain)
+
+
+def two_spot_results():
+    return [SpotResult(spot=SPOT_A, windows=[window(10, 14, 6, 8, 11)]),
+            SpotResult(spot=SPOT_B, windows=[window(13, 18, 8, 11, 14, direction=0)])]
+
+
+class FixedNow(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return NOW
+
+
+def test_plan_and_payload_for_a_two_spot_day():
+    plan = routes.plan_day(two_spot_results(), 1, NOW, prefer="strong")
+    payload = webapp.route_payload(plan, Settings(), PROFILE, 100)
+    assert payload["kind"] == "route"
+    assert [leg["spot"] for leg in payload["legs"]] == ["Alfa", "Bravo"]
+    assert payload["legs"][0]["kite"] == 12 and payload["legs"][1]["kite"] == 9
+    assert payload["kites"] == [12, 9]
+    assert payload["legs"][1]["travel_km"] > 0 and payload["total_h"] >= 7
+
+
+def test_plan_stays_when_one_spot_wins_and_none_when_calm():
+    only_a = [SpotResult(spot=SPOT_A, windows=[window(10, 16, 6, 8, 11)]),
+              SpotResult(spot=SPOT_B, windows=[window(15, 16, 8, 9, 12)])]
+    payload = webapp.route_payload(routes.plan_day(only_a, 1, NOW), Settings(), {}, 0)
+    assert payload["kind"] == "stay" and payload["spot"] == "Alfa" and payload["within"]
+    assert payload["windows"][0]["start"] == "10:00" and payload["windows"][0]["kite"] is None
+    calm = [SpotResult(spot=SPOT_A), SpotResult(spot=SPOT_B)]
+    assert webapp.route_payload(routes.plan_day(calm, 1, NOW), Settings(), {}, 0) == {"kind": "none"}
+
+
+def test_dry_filter_drops_wet_windows():
+    wet = [SpotResult(spot=SPOT_A, windows=[window(10, 14, 6, 8, 11, rain=6.0)])]
+    assert routes.plan_day(wet, 1, NOW, dry=True).items == []
+    assert routes.plan_day(wet, 1, NOW).items
+
+
+def test_chat_route_text_is_unchanged_by_the_refactor(monkeypatch):
+    async def fake_gather(spots, settings):
+        return two_spot_results()
+
+    monkeypatch.setattr(handlers, "gather_results", fake_gather)
+    monkeypatch.setattr(config, "load_spots", lambda settings=None: [SPOT_A, SPOT_B])
+    monkeypatch.setattr(handlers, "datetime", FixedNow)
+    text = asyncio.run(handlers._route_text(Settings(), 1, "strong", weight_kg=85,
+                                            quiver=[12, 9, 7]))
+    assert text.startswith("🗺 <b>Maršruts</b> · Ot 10.11")
+    assert "1️⃣ 10:00–14:00 · Alfa" in text and "🪁 Ņem līdzi: 12 + 9" in text
+    calm = asyncio.run(handlers._route_text(Settings(), 2, None, dry=True))
+    assert calm == "🗺 Parīt bez lietus: nevienā spotā nav braucama vēja — maršrutu nesanāk."
+
+
+def test_kite_table_matches_pick_kite():
+    table = webapp.kite_table(PROFILE, "ms")
+    assert [row["size"] for row in table] == [12, 9, 7]
+    assert table[0]["lo"] is None and table[-1]["hi"] is None
+    assert table[0]["hi"] == table[1]["lo"] == pytest.approx(9.2, abs=0.05)
+    assert table[1]["hi"] == pytest.approx(12.0, abs=0.05)
+    for row in table:  # the middle of each range really picks that kite
+        lo = row["lo"] if row["lo"] is not None else row["hi"] - 2
+        hi = row["hi"] if row["hi"] is not None else row["lo"] + 2
+        assert routes.pick_kite((lo + hi) / 2, "ms", 85, [12, 9, 7]) == row["size"]
+    assert webapp.kite_table({"quiver": [9]}, "ms") == []
+
+
+@pytest.mark.parametrize("body,expected", [
+    ({"quiver": [9, 12, 7.5]}, {"quiver": [12, 9, 7.5]}),
+    ({"weight_kg": 85}, {"weight_kg": 85.0}),
+    ({"weight_kg": None}, {"weight_kg": None}),
+    ({"home": {"lat": 57.123456, "lon": 24.1}}, {"home": {"lat": 57.12346, "lon": 24.1}}),
+    ({"home": None}, {"home": None}),
+    ({"quiver": [30]}, None),
+    ({"quiver": [9] * 9}, None),
+    ({"quiver": "9 12"}, None),
+    ({"weight_kg": 10}, None),
+    ({"home": {"lat": 120, "lon": 1}}, None),
+    ({}, None),
+    ([1, 2], None),
+])
+def test_parse_profile(body, expected):
+    assert webapp.parse_profile(body) == expected
+
+
+def test_route_args():
+    s = Settings()
+    assert webapp.route_args({"day": "1", "prefer": "light", "km": "50", "dry": "1"}, s) == {
+        "day": 1, "prefer": "light", "km": 50, "dry": True, "home": False}
+    assert webapp.route_args({}, s)["km"] == 100
+    for bad in ({"day": "5"}, {"km": "70"}, {"prefer": "max"}, {"day": "x"}):
+        assert webapp.route_args(bad, s) is None
+
+
+class ShareBot:
+    def __init__(self, members):
+        self.members = members
+        self.sent = []
+
+    async def get_chat_member(self, chat_id, user_id):
+        return Member(self.members.get(chat_id, "left"))
+
+    async def send_message(self, **kwargs):
+        self.sent.append(kwargs)
+
+
+def test_route_profile_and_share_endpoints(monkeypatch, tmp_path):
+    from aiohttp.test_utils import TestClient, TestServer
+
+    monkeypatch.setattr(config, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(config, "USERS_FILE", tmp_path / "users.json")
+    monkeypatch.setattr(config, "load_subscriptions",
+                        lambda: [Subscription(chat_id=-100), Subscription(chat_id=-200)])
+    monkeypatch.setattr(webapp, "datetime", FixedNow)
+    config.update_profile(42, **PROFILE)
+    bot = ShareBot({-100: "member"})
+
+    async def fetch(spots, settings):
+        return two_spot_results()
+
+    async def access(user_id, settings):
+        return True
+
+    app = webapp.build_app(TOKEN, access, cache=webapp.ForecastCache(fetch=fetch),
+                           settings_loader=Settings, spots_loader=lambda s: [SPOT_A, SPOT_B],
+                           bot=bot)
+    header = {webapp.INIT_DATA_HEADER: signed()}
+
+    async def run():
+        async with TestClient(TestServer(app)) as client:
+            r = await client.get("/api/route?day=1&prefer=strong&km=100", headers=header)
+            body = await r.json()
+            assert r.status == 200 and body["kind"] == "route" and body["can_share"]
+            assert body["has_home"] is False
+            assert (await client.get("/api/route?day=1&km=7", headers=header)).status == 400
+
+            r = await client.post("/api/route/share", json={"day": 1, "prefer": "strong"},
+                                  headers=header)
+            assert r.status == 200 and (await r.json()) == {"sent": 1}
+            [message] = bot.sent
+            assert message["chat_id"] == -100  # not -200: the user left that group
+            assert message["text"].startswith("🗺 <b>Maršruts</b>")
+            assert message["text"].endswith("\n\n👤 Jānis")
+            r = await client.post("/api/route/share", json={"day": 1}, headers=header)
+            assert r.status == 429  # one share a minute
+            assert (await client.post("/api/route/share", json={"day": 1})).status == 401
+
+            r = await client.get("/api/profile", headers=header)
+            profile = await r.json()
+            assert profile["quiver"] == [12, 9, 7] and profile["kite_table"][0]["size"] == 12
+            r = await client.post("/api/profile", headers=header,
+                                  json={"quiver": [10], "weight_kg": 70,
+                                        "home": {"lat": 57.0, "lon": 24.0}})
+            profile = await r.json()
+            assert profile["quiver"] == [10] and profile["weight_kg"] == 70 and profile["home"]
+            assert config.get_profile(42)["home"] == {"lat": 57.0, "lon": 24.0}
+            r = await client.post("/api/profile", headers=header, json={"weight_kg": 500})
+            assert r.status == 400
+            r = await client.get("/api/route?day=1&home=1", headers=header)
+            assert (await r.json())["has_home"] is True
+
+    asyncio.run(run())

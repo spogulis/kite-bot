@@ -258,12 +258,21 @@ needed (it uses Telegram long-polling).
 
 ## Mini App (optional)
 
-A Telegram Mini App — a web page that opens inside Telegram — shows the same
-forecast as screens: every spot for a day with its rideable hours as a strip,
-and per spot an hour-by-hour chart (wind, gusts, the spot's minimum, the
-rideable window shaded, wind direction against the spot's sectors) with the
-rider's kite pick. Day tabs and a "Bez lietus" filter replace re-running
-commands. It is read-only; everything else stays in chat.
+A Telegram Mini App — a web page that opens inside Telegram — puts the bot's
+planning features on three tabs:
+
+- **Prognoze**: every spot for a day with its rideable hours as a strip, and
+  per spot an hour-by-hour chart (wind, gusts, the spot's minimum, the
+  rideable window shaded, wind direction against the spot's sectors) with the
+  rider's kite pick. Day tabs and a "Bez lietus" filter.
+- **Maršruts**: the `/marsruts` planner on one screen — day, wind preference,
+  drive limit, dry-only and "from home" as controls, the route recomputed on
+  every change, and "📤 Nosūtīt grupai" posting it to the subscribed groups
+  you are in (once a minute at most).
+- **Profils**: kites, weight and home location (from the phone, Telegram 8.0+)
+  as a form, plus the wind range each of your kites gets picked for.
+
+The daily digest, the rider recap and records stay chat messages.
 
 It runs inside the bot process — no second service writes `data/` — and is
 published through a **Cloudflare Tunnel**, so nothing is opened on the router

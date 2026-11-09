@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import html
 import json
 import logging
 import re
@@ -24,11 +25,12 @@ from urllib.parse import parse_qsl
 from zoneinfo import ZoneInfo
 
 from aiohttp import web
+from telegram.constants import ParseMode
 from telegram.error import TelegramError
 
 from . import checker, config, routes
 from .analysis import dry_windows, in_sectors
-from .config import UNIT_LABELS, effective_band, effective_foil_min
+from .config import UNIT_LABELS, effective_band, effective_foil_min, to_knots
 from .messages import WEEKDAYS_LV
 
 log = logging.getLogger(__name__)
@@ -296,6 +298,142 @@ def forecast_payload(results: list, settings, day: int, now: datetime, profile: 
     }
 
 
+# --- route planner and profile ---------------------------------------------------
+
+ROUTE_PREFS = {"strong": "strong", "light": "light", "any": None}
+ROUTE_KMS = (50, 100, 200, 0)   # 0 = no limit, as in /marsruts
+QUIVER_MAX = 8
+SHARE_COOLDOWN_S = 60
+
+
+def kite_table(profile: dict, unit: str) -> list:
+    """Which of the rider's kites routes would pick for which wind, as the
+    wind ranges pick_kite() switches at (biggest kite = lightest wind)."""
+    weight = profile.get("weight_kg")
+    quiver = sorted(profile.get("quiver") or [], reverse=True)
+    if not weight or not quiver:
+        return []
+    per_knot = 1 / to_knots(1.0, unit)
+
+    def switch(a: float, b: float) -> float:  # wind where kites a and b are equally close
+        return _r(routes.KITE_FACTOR * weight / ((a + b) / 2) * per_knot)
+
+    return [{"size": size,
+             "lo": switch(quiver[i - 1], size) if i > 0 else None,
+             "hi": switch(size, quiver[i + 1]) if i < len(quiver) - 1 else None}
+            for i, size in enumerate(quiver)]
+
+
+def _home(profile: dict) -> "tuple | None":
+    home = profile.get("home") or {}
+    try:
+        return float(home["lat"]), float(home["lon"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def route_args(source, settings) -> "dict | None":
+    """day / prefer / km / dry / home from a query string or JSON body, or None."""
+    try:
+        day = int(source.get("day", 0))
+        km = int(source.get("km", 100))
+    except (TypeError, ValueError):
+        return None
+    prefer = str(source.get("prefer", "any"))
+    if not 0 <= day < settings.forecast_days or km not in ROUTE_KMS or prefer not in ROUTE_PREFS:
+        return None
+
+    def flag(name: str) -> bool:
+        return str(source.get(name, "0")).lower() in ("1", "true")
+
+    return {"day": day, "prefer": ROUTE_PREFS[prefer], "km": km,
+            "dry": flag("dry"), "home": flag("home")}
+
+
+def _plan(results: list, settings, args: dict, now: datetime, profile: dict):
+    origin = _home(profile) if args["home"] else None
+    return routes.plan_day(results, args["day"], now, prefer=args["prefer"], origin=origin,
+                           max_drive_km=args["km"] or None, dry=args["dry"])
+
+
+def _leg_json(leg, settings, profile: dict) -> dict:
+    w = leg.window
+    return {
+        "spot": leg.spot.name, "start": f"{leg.start:%H:%M}", "end": f"{w.end:%H:%M}",
+        "min": _r(w.min_speed), "max": _r(w.max_speed), "gust": _r(w.max_gust),
+        "dir_lv": dir_abbr(w.direction), "rain": _r(w.rain_mm),
+        "kite": routes.pick_kite((w.min_speed + w.max_speed) / 2, settings.wind_unit,
+                                 profile.get("weight_kg"), profile.get("quiver")),
+        "travel_min": round(leg.travel_min), "travel_km": round(leg.travel_km),
+    }
+
+
+def route_payload(plan, settings, profile: dict, km: int) -> dict:
+    if not plan.items:
+        return {"kind": "none"}
+    if plan.legs:
+        legs = [_leg_json(leg, settings, profile) for leg in plan.legs]
+        kites = sorted({leg["kite"] for leg in legs if leg["kite"] is not None}, reverse=True)
+        return {"kind": "route", "total_h": round(plan.total * 2) / 2,
+                "drive_km": round(sum(leg.travel_km for leg in plan.legs)),
+                "legs": legs, "kites": kites}
+    name, hours, drive_km, within = plan.stay
+    return {"kind": "stay", "spot": name, "hours": round(hours * 2) / 2,
+            "drive_km": round(drive_km) if drive_km is not None else None,
+            "within": within, "km": km,
+            "windows": [_window_json(w, settings, profile) for s, w in plan.items if s.name == name]}
+
+
+def profile_payload(profile: dict, settings) -> dict:
+    return {
+        "unit": UNIT_LABELS.get(settings.wind_unit, settings.wind_unit),
+        "home": _home(profile) is not None,
+        "quiver": sorted(profile.get("quiver") or [], reverse=True),
+        "weight_kg": profile.get("weight_kg"),
+        "kite_table": kite_table(profile, settings.wind_unit),
+    }
+
+
+def parse_profile(body) -> "dict | None":
+    """Validated profile fields from a JSON body (same limits as /quiver, /weight)."""
+    if not isinstance(body, dict):
+        return None
+    out: dict = {}
+    if "quiver" in body:
+        quiver = body["quiver"]
+        if not isinstance(quiver, list) or len(quiver) > QUIVER_MAX:
+            return None
+        try:
+            sizes = [float(s) for s in quiver]
+        except (TypeError, ValueError):
+            return None
+        if any(not 2 <= s <= 25 for s in sizes):
+            return None
+        out["quiver"] = sorted(sizes, reverse=True)
+    if "weight_kg" in body:
+        weight = body["weight_kg"]
+        if weight is not None:
+            try:
+                weight = float(weight)
+            except (TypeError, ValueError):
+                return None
+            if not 30 <= weight <= 200:
+                return None
+        out["weight_kg"] = weight
+    if "home" in body:
+        home = body["home"]
+        if home is not None:
+            try:
+                lat, lon = float(home["lat"]), float(home["lon"])
+            except (KeyError, TypeError, ValueError):
+                return None
+            if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+                return None
+            home = {"lat": round(lat, 5), "lon": round(lon, 5)}
+        out["home"] = home
+    return out or None
+
+
 # --- HTTP ------------------------------------------------------------------------
 
 TOKEN = web.AppKey("token", str)
@@ -303,6 +441,8 @@ ACCESS = web.AppKey("access", object)
 CACHE = web.AppKey("cache", ForecastCache)
 SETTINGS_LOADER = web.AppKey("settings_loader", object)
 SPOTS_LOADER = web.AppKey("spots_loader", object)
+BOT = web.AppKey("bot", object)
+SHARED_AT = web.AppKey("shared_at", dict)
 
 
 def _error(status: int, message: str) -> web.Response:
@@ -310,26 +450,131 @@ def _error(status: int, message: str) -> web.Response:
                              headers={"Cache-Control": "no-store"})
 
 
-async def handle_forecast(request: web.Request) -> web.Response:
+def _json(payload: dict) -> web.Response:
+    return web.json_response(payload, headers={"Cache-Control": "no-store"},
+                             dumps=lambda obj: json.dumps(obj, ensure_ascii=False))
+
+
+async def _authorize(request: web.Request) -> "tuple | web.Response":
+    """(settings, user) for a signed request from an allowed user, else the error."""
     settings = request.app[SETTINGS_LOADER]()
     fields = verify_init_data(request.headers.get(INIT_DATA_HEADER, ""), request.app[TOKEN])
     if fields is None:
         return _error(401, NO_INIT_DATA_LV)
-    user_id = fields["user"]["id"]
-    if not await request.app[ACCESS](user_id, settings):
+    if not await request.app[ACCESS](fields["user"]["id"], settings):
         return _error(403, DENIED_LV)
+    return settings, fields["user"]
+
+
+async def _results(request: web.Request, settings) -> tuple:
+    spots = request.app[SPOTS_LOADER](settings)
+    return await request.app[CACHE].get(spots, settings)
+
+
+async def handle_forecast(request: web.Request) -> web.Response:
+    auth = await _authorize(request)
+    if isinstance(auth, web.Response):
+        return auth
+    settings, user = auth
     try:
         day = int(request.query.get("day", "0"))
     except ValueError:
         day = -1
     if not 0 <= day < settings.forecast_days:
         return _error(400, "Nederīga diena.")
-    spots = request.app[SPOTS_LOADER](settings)
-    results, fetched_at = await request.app[CACHE].get(spots, settings)
+    results, fetched_at = await _results(request, settings)
     now = datetime.now(ZoneInfo(settings.timezone))
-    payload = forecast_payload(results, settings, day, now, config.get_profile(user_id), fetched_at)
-    return web.json_response(payload, headers={"Cache-Control": "no-store"},
-                             dumps=lambda obj: json.dumps(obj, ensure_ascii=False))
+    return _json(forecast_payload(results, settings, day, now,
+                                  config.get_profile(user["id"]), fetched_at))
+
+
+async def handle_route(request: web.Request) -> web.Response:
+    auth = await _authorize(request)
+    if isinstance(auth, web.Response):
+        return auth
+    settings, user = auth
+    args = route_args(request.query, settings)
+    if args is None:
+        return _error(400, "Nederīgi maršruta parametri.")
+    profile = config.get_profile(user["id"])
+    results, _ = await _results(request, settings)
+    now = datetime.now(ZoneInfo(settings.timezone))
+    payload = route_payload(_plan(results, settings, args, now, profile), settings,
+                            profile, args["km"])
+    payload["has_home"] = _home(profile) is not None
+    payload["can_share"] = request.app[BOT] is not None and any(
+        s.chat_id < 0 for s in config.load_subscriptions())
+    return _json(payload)
+
+
+async def handle_route_share(request: web.Request) -> web.Response:
+    """Post the planned route to the subscribed groups the user is in, like
+    the chat wizard's "📤 Nosūtīt grupai"."""
+    auth = await _authorize(request)
+    if isinstance(auth, web.Response):
+        return auth
+    settings, user = auth
+    bot = request.app[BOT]
+    if bot is None:
+        return _error(503, "Sūtīšana šobrīd nav pieejama.")
+    try:
+        body = await request.json()
+    except ValueError:
+        body = None
+    args = route_args(body, settings) if isinstance(body, dict) else None
+    if args is None:
+        return _error(400, "Nederīgi maršruta parametri.")
+    now_s = time.monotonic()
+    last = request.app[SHARED_AT].get(user["id"])
+    if last is not None and now_s - last < SHARE_COOLDOWN_S:
+        return _error(429, "Pagaidi minūti pirms nākamā maršruta.")
+    profile = config.get_profile(user["id"])
+    results, _ = await _results(request, settings)
+    now = datetime.now(ZoneInfo(settings.timezone))
+    plan = _plan(results, settings, args, now, profile)
+    if not plan.items:
+        return _error(400, "Šai dienai nav ko sūtīt.")
+    text = routes.format_plan(plan, settings, routes.day_label(args["day"], now, args["dry"]),
+                              args["km"] or None, weight_kg=profile.get("weight_kg"),
+                              quiver=profile.get("quiver"))
+    name = str(user.get("first_name") or "").strip()
+    if name:
+        text += f"\n\n👤 {html.escape(name)}"
+    request.app[SHARED_AT][user["id"]] = now_s
+    sent = 0
+    for chat_id in sorted({s.chat_id for s in config.load_subscriptions() if s.chat_id < 0}):
+        try:
+            member = await bot.get_chat_member(chat_id, user["id"])
+            if str(member.status) in ("left", "kicked"):
+                continue
+            await bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.HTML)
+            sent += 1
+        except TelegramError as exc:
+            log.warning("Mini App route share to %s failed: %s", chat_id, exc)
+    return _json({"sent": sent})
+
+
+async def handle_profile_get(request: web.Request) -> web.Response:
+    auth = await _authorize(request)
+    if isinstance(auth, web.Response):
+        return auth
+    settings, user = auth
+    return _json(profile_payload(config.get_profile(user["id"]), settings))
+
+
+async def handle_profile_post(request: web.Request) -> web.Response:
+    auth = await _authorize(request)
+    if isinstance(auth, web.Response):
+        return auth
+    settings, user = auth
+    try:
+        body = await request.json()
+    except ValueError:
+        body = None
+    fields = parse_profile(body)
+    if fields is None:
+        return _error(400, "Nederīgi profila dati: kaiti 2–25 m² (līdz 8), svars 30–200 kg.")
+    return _json(profile_payload(config.update_profile(user["id"], **fields), settings))
 
 
 async def handle_index(request: web.Request) -> web.FileResponse:
@@ -347,16 +592,23 @@ async def _security_headers(request: web.Request, response: web.StreamResponse) 
 
 
 def build_app(token: str, access, *, cache: "ForecastCache | None" = None,
-              settings_loader=None, spots_loader=None) -> web.Application:
-    """`access(user_id, settings) -> bool` decides who may read the forecast."""
-    app = web.Application()
+              settings_loader=None, spots_loader=None, bot=None) -> web.Application:
+    """`access(user_id, settings) -> bool` decides who may use the app; `bot`
+    (the Telegram bot) is needed only to post routes to groups."""
+    app = web.Application(client_max_size=16 * 1024)
     app[TOKEN] = token
     app[ACCESS] = access
     app[CACHE] = cache or ForecastCache()
     app[SETTINGS_LOADER] = settings_loader or config.load_settings
     app[SPOTS_LOADER] = spots_loader or config.load_spots
+    app[BOT] = bot
+    app[SHARED_AT] = {}
     app.router.add_get("/", handle_index)
     app.router.add_get("/api/forecast", handle_forecast)
+    app.router.add_get("/api/route", handle_route)
+    app.router.add_post("/api/route/share", handle_route_share)
+    app.router.add_get("/api/profile", handle_profile_get)
+    app.router.add_post("/api/profile", handle_profile_post)
     app.router.add_get("/healthz", handle_health)
     app.router.add_static("/static", STATIC_DIR)
     app.on_response_prepare.append(_security_headers)
@@ -368,7 +620,7 @@ async def start(application) -> None:
     settings = config.load_settings()
     if not settings.webapp_port:
         return
-    app = build_app(application.bot.token, Access(application.bot).allowed)
+    app = build_app(application.bot.token, Access(application.bot).allowed, bot=application.bot)
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, settings.webapp_host, settings.webapp_port)

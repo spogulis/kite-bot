@@ -30,7 +30,7 @@ from .checker import gather_results
 from .config import Spot, Subscription
 from .messages import (
     DIRECTION_LABELS_LV, SpotResult, any_windows, build_digest, describe_spot,
-    format_window, split_message, today_windows, unit_label,
+    split_message, today_windows, unit_label,
 )
 
 log = logging.getLogger(__name__)
@@ -389,7 +389,7 @@ async def cmd_prognoze(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                      dry=bool(context.args))
 
 
-ROUTE_DAYS_LV = ["Šodien", "Rīt", "Parīt"]
+ROUTE_DAYS_LV = routes.ROUTE_DAYS_LV
 ROUTE_PREFS_LV = {"s": "stiprāku vēju", "l": "vieglāku vēju", "a": "jebkādu vēju"}
 
 # (chat_id, user_id) -> pending route waiting for the user's shared location
@@ -440,49 +440,14 @@ async def _route_text(settings, offset: int, prefer: "str | None",
                       dry: bool = False) -> str:
     spots = config.load_spots(settings)
     results = await gather_results(spots, settings)
-    tz = ZoneInfo(settings.timezone)
-    now = datetime.now(tz)
-    target = (now + timedelta(days=offset)).date()
-    day_lv = ROUTE_DAYS_LV[offset] if offset < len(ROUTE_DAYS_LV) else target.isoformat()
-    # foil-only windows stay out: the route and kite picks assume the quiver
-    items = [(r.spot, w) for r in results for w in r.windows
-             if w.start.date() == target and not w.foil_only]
-    if offset == 0:
-        items = [(spot, w2) for spot, w in items for w2 in clip_past([w], now)]
-    if dry:
-        day_lv += " bez lietus"
-        items = [(spot, w) for spot, w in items if dry_windows([w])]
-    if not items:
-        return f"🗺 {day_lv}: nevienā spotā nav braucama vēja — maršrutu nesanāk."
-    depart = now if (offset == 0 and origin is not None) else None
-    legs, total, single = routes.day_route(items, prefer=prefer, origin=origin,
-                                           depart_earliest=depart, max_drive_km=max_drive_km)
-    if legs and total >= single + 0.5:
-        return routes.format_route(legs, total, settings,
-                                   weight_kg=weight_kg, quiver=quiver)
-    name, best_hours, drive_km, within = routes.best_single(items, origin, max_drive_km)
-    hours = f"{round(best_hours * 2) / 2:g}".replace(".", ",")
-    drive_txt = f", 🚗 ~{round(drive_km)} km no tevis" if drive_km is not None else ""
-    label = unit_label(settings.wind_unit)
-    condition_lines = []
-    for spot, w in items:
-        if spot.name != name:
-            continue
-        line = format_window(w, label)
-        kite = routes.pick_kite((w.min_speed + w.max_speed) / 2,
-                                settings.wind_unit, weight_kg, quiver)
-        if kite is not None:
-            line += f" · 🪁 {kite:g}"
-        condition_lines.append(line)
-    conditions = "\n".join(condition_lines)
-    if not within:
-        head = (f"🗺 {day_lv}: {round(max_drive_km)} km robežās no tevis braucama vēja "
-                f"nav. Tuvākais spots ar vēju: <b>{html.escape(name)}</b> "
-                f"(~{hours} h ūdenī{drive_txt}):")
-    else:
-        head = (f"🗺 {day_lv}: braukāt apkārt neatmaksājas — labākais ir palikt "
-                f"spotā <b>{html.escape(name)}</b> (~{hours} h ūdenī{drive_txt}):")
-    return head + "\n" + conditions
+    now = datetime.now(ZoneInfo(settings.timezone))
+    plan = routes.plan_day(results, offset, now, prefer=prefer, origin=origin,
+                           max_drive_km=max_drive_km, dry=dry)
+    return routes.format_plan(plan, settings, route_day_label(offset, now, dry),
+                              max_drive_km, weight_kg=weight_kg, quiver=quiver)
+
+
+route_day_label = routes.day_label
 
 
 async def _cb_route(query, context, settings, arg: str) -> None:

@@ -8,12 +8,13 @@ window, arrive at spot B while its window is already running).
 from __future__ import annotations
 
 import html
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
 from math import asin, cos, radians, sin, sqrt
 
+from .analysis import clip_past, dry_windows
 from .config import to_knots
-from .messages import WEEKDAYS_LV, direction_word, rain_note, unit_label
+from .messages import WEEKDAYS_LV, direction_word, format_window, rain_note, unit_label
 
 KITE_FACTOR = 2.2  # kite size m² ≈ 2.2 × rider kg / wind kn (twintip rule of thumb)
 
@@ -231,3 +232,75 @@ def format_route(legs: list, total_hours: float, settings,
     return "\n".join(lines)
 
 
+
+
+ROUTE_DAYS_LV = ["Šodien", "Rīt", "Parīt"]
+
+
+def day_label(offset: int, now, dry: bool = False) -> str:
+    target = (now + timedelta(days=offset)).date()
+    label = ROUTE_DAYS_LV[offset] if offset < len(ROUTE_DAYS_LV) else target.isoformat()
+    return label + (" bez lietus" if dry else "")
+
+
+@dataclass
+class Plan:
+    """One day's answer to "where should I ride": a multi-spot route when
+    moving pays off, else the single best spot to stay at (`stay` is
+    best_single()'s tuple), else nothing (no items)."""
+    items: list                       # [(spot, window)] the plan was made from
+    legs: list = field(default_factory=list)
+    total: float = 0.0
+    stay: "tuple | None" = None       # (name, hours, drive_km | None, within_limit)
+
+
+def plan_day(results: list, offset: int, now, *, prefer: "str | None" = None,
+             origin: "tuple | None" = None, max_drive_km: "float | None" = None,
+             dry: bool = False) -> Plan:
+    """Plan day `offset` (0 = today, already-past hours dropped) from forecast
+    results. Foil-only windows stay out: routes and kite picks assume the quiver."""
+    target = (now + timedelta(days=offset)).date()
+    items = [(r.spot, w) for r in results for w in r.windows
+             if w.start.date() == target and not w.foil_only]
+    if offset == 0:
+        items = [(spot, w2) for spot, w in items for w2 in clip_past([w], now)]
+    if dry:
+        items = [(spot, w) for spot, w in items if dry_windows([w])]
+    if not items:
+        return Plan(items=[])
+    depart = now if (offset == 0 and origin is not None) else None
+    legs, total, single = day_route(items, prefer=prefer, origin=origin,
+                                    depart_earliest=depart, max_drive_km=max_drive_km)
+    if legs and total >= single + 0.5:
+        return Plan(items=items, legs=legs, total=total)
+    return Plan(items=items, stay=best_single(items, origin, max_drive_km))
+
+
+def format_plan(plan: Plan, settings, day_lv: str, max_drive_km: "float | None" = None,
+                weight_kg: "float | None" = None, quiver: "list | None" = None) -> str:
+    """The Latvian HTML message for a Plan, as /marsruts and the Mini App send it."""
+    if not plan.items:
+        return f"🗺 {day_lv}: nevienā spotā nav braucama vēja — maršrutu nesanāk."
+    if plan.legs:
+        return format_route(plan.legs, plan.total, settings, weight_kg=weight_kg, quiver=quiver)
+    name, best_hours, drive_km, within = plan.stay
+    hours = f"{round(best_hours * 2) / 2:g}".replace(".", ",")
+    drive_txt = f", 🚗 ~{round(drive_km)} km no tevis" if drive_km is not None else ""
+    label = unit_label(settings.wind_unit)
+    lines = []
+    for spot, w in plan.items:
+        if spot.name != name:
+            continue
+        line = format_window(w, label)
+        kite = pick_kite((w.min_speed + w.max_speed) / 2, settings.wind_unit, weight_kg, quiver)
+        if kite is not None:
+            line += f" · 🪁 {kite:g}"
+        lines.append(line)
+    if not within:
+        head = (f"🗺 {day_lv}: {round(max_drive_km)} km robežās no tevis braucama vēja "
+                f"nav. Tuvākais spots ar vēju: <b>{html.escape(name)}</b> "
+                f"(~{hours} h ūdenī{drive_txt}):")
+    else:
+        head = (f"🗺 {day_lv}: braukāt apkārt neatmaksājas — labākais ir palikt "
+                f"spotā <b>{html.escape(name)}</b> (~{hours} h ūdenī{drive_txt}):")
+    return head + "\n" + "\n".join(lines)

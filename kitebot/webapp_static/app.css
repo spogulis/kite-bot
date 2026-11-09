@@ -114,3 +114,52 @@ main { padding: 10px 12px 24px; display: flex; flex-direction: column; gap: 10px
 .tile b { font-size: 20px; line-height: 24px; }
 .tile span { color: var(--hint); font-size: 13px; }
 .tile svg { width: 24px; height: 24px; }
+
+/* bottom tabs */
+main { padding-bottom: 88px; }
+.tabs {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 10; display: flex;
+  background: var(--card); border-top: 1px solid var(--line);
+  padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
+}
+.tabs a { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 1px; color: var(--hint); text-decoration: none; }
+.tabs a b { font-size: 20px; font-weight: 400; }
+.tabs a span { font-size: 12px; }
+.tabs a.on { color: var(--link); font-weight: 600; }
+
+/* route planner */
+.opts { display: flex; flex-direction: column; gap: 8px; }
+.switches { display: flex; flex-wrap: wrap; gap: 8px 18px; font-size: 15px; }
+.switches label { display: flex; align-items: center; gap: 6px; }
+.switches label.off { color: var(--hint); }
+.card h2 { font-size: 16px; margin: 0 0 6px; }
+.leg { border-left: 4px solid var(--kite); padding: 6px 0 6px 12px; }
+.drive { border-left: 4px dotted var(--line); padding: 4px 0 4px 12px; color: var(--hint); font-size: 14px; }
+.sum { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+.wins .row { padding: 6px 0; border-bottom: 1px solid var(--line); }
+.wins .row:last-child { border-bottom: 0; }
+.btn {
+  display: block; width: 100%; border: 0; border-radius: 12px; padding: 12px; cursor: pointer;
+  font: inherit; font-weight: 600;
+  background: var(--tg-theme-button-color, var(--kite)); color: var(--tg-theme-button-text-color, #FBFBF8);
+}
+.btn.ghost { background: var(--none); color: var(--text); }
+.btn:disabled { opacity: .5; cursor: default; }
+.btns { display: flex; gap: 8px; margin-top: 8px; }
+.note { color: var(--hint); font-size: 14px; margin: 6px 0 0; }
+
+/* profile */
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { display: flex; align-items: center; gap: 2px; border: 2px solid var(--kite); color: var(--kite); border-radius: 999px; padding: 2px 4px 2px 12px; font-weight: 600; }
+.chip button { border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; padding: 0 6px; }
+.add { display: flex; gap: 8px; margin-top: 10px; }
+.add input {
+  flex: 1; min-width: 0; font: inherit; padding: 8px 10px; border-radius: 10px;
+  border: 1px solid var(--line); background: var(--bg); color: var(--text);
+}
+.add .btn { width: auto; padding: 8px 14px; }
+.stepper { display: flex; align-items: center; gap: 12px; }
+.stepper button { width: 40px; height: 40px; border: 0; border-radius: 12px; background: var(--none); color: var(--text); font-size: 22px; cursor: pointer; }
+.stepper b { min-width: 64px; text-align: center; font-size: 18px; }
+.ktable .row { padding: 6px 0; border-bottom: 1px solid var(--line); }
+.ktable .row:last-child { border-bottom: 0; }
