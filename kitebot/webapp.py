@@ -507,16 +507,24 @@ def save_spot(fields: dict) -> "str | None":
 
 # --- riders ----------------------------------------------------------------------
 
-def riders_payload(riders: list, sessions: dict) -> dict:
-    """Records ranked, each tracked rider's logged best jumps as a series, and
-    the latest logged day's sessions."""
+def riders_payload(riders: list, sessions: dict, history: "dict | None" = None) -> dict:
+    """Records ranked, each tracked rider's best jumps as a series — monthly
+    bests from the backfill, then every logged session — and the latest
+    logged day's sessions."""
     days = sorted(sessions)
     tracked = [r["name"] for r in sorted(riders, key=lambda r: -r["record_height_m"])]
     points: dict = {name: [] for name in tracked}
+    months = [m for m in (history or {}).values() if isinstance(m, dict) and m.get("date")]
+    for month in months:
+        for entry in month.get("entries") or []:
+            if entry.get("name") in points and entry.get("height_m"):
+                points[entry["name"]].append([month["date"], entry["height_m"]])
     for day in days:
         for entry in sessions[day]:
             if entry.get("name") in points and entry.get("height_m"):
                 points[entry["name"]].append([day, entry["height_m"]])
+    for series in points.values():
+        series.sort(key=lambda p: p[0])
     latest_day = days[-1] if days else None
     latest = [e for e in sessions.get(latest_day, []) if e.get("name") in points]
     latest_by_name = {e["name"]: e for e in latest}
@@ -535,7 +543,8 @@ def riders_payload(riders: list, sessions: dict) -> dict:
         "series": [{"name": name, "points": points[name]} for name in tracked if points[name]],
         "latest": {"date": latest_day,
                    "entries": sorted(latest, key=lambda e: -(e.get("height_m") or 0))},
-        "since": days[0] if days else None,
+        "since": min([m["date"] for m in months] + days[:1], default=None),
+        "daily_since": days[0] if days else None,  # before this: one point per month
     }
 
 
@@ -725,7 +734,8 @@ async def handle_riders(request: web.Request) -> web.Response:
     auth = await _authorize(request)
     if isinstance(auth, web.Response):
         return auth
-    return _json(riders_payload(config.load_riders(), config.load_sessions()))
+    return _json(riders_payload(config.load_riders(), config.load_sessions(),
+                                config.load_history()))
 
 
 async def handle_profile_get(request: web.Request) -> web.Response:

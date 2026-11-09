@@ -6,7 +6,8 @@ spots and tells you when it's worth rigging up.
 - **Daily digest** — posted every morning to every subscribed chat (your kite
   group, your own DM, a specific group topic). Each chat can filter which
   spots its digest covers (`/myspots`), so users who only care about some
-  spots subscribe in a DM and pick theirs. Mornings with nothing rideable
+  spots subscribe in a DM and pick theirs. The post lists only the spots
+  with a rideable window today, with no title line. Mornings with nothing rideable
   skip the forecast: if anyone rode yesterday only their recap goes out,
   otherwise nothing does. Set `post_when_no_wind: true` to post the full
   digest anyway.
@@ -145,7 +146,7 @@ restart — friends keep their personal DM digests, but editing is locked down.
 | `timezone` | `Europe/Riga` | Timezone for the daily post schedule |
 | `wind_unit` | `ms` | Unit for thresholds, messages and forecasts: `kn`, `ms`, `kmh`, `mph` |
 | `daily_post_time` | `"07:00"` | When the digest is posted |
-| `daily_greeting` | `"Labrīt, kaiteri!"` | First line of the daily post; empty string disables |
+| `daily_greeting` | `""` | Optional first line of the daily post, e.g. `"Labrīt, kaiteri!"`; none by default |
 | `forecast_days` | `3` | Days ahead to scan (1–7) |
 | `digest_map` | `false` | Send the morning digest as a [map picture](#map-digest) with the text in its caption |
 | `post_when_no_wind` | `false` | `false` = when nothing is rideable today, send only yesterday's rider recap — or nothing if nobody rode; `true` = post the full digest anyway |
@@ -273,8 +274,11 @@ planning features on three tabs:
 - **Braucēji**: the record table, a progress chart of every rider's best jump
   per session (riders can be switched on and off to compare), and the latest
   logged sessions. The chart reads `data/sessions.json`, which the morning job
-  starts filling from the first run of this version — `riders.json` only ever
-  kept each rider's best jump, so there is no older history to draw.
+  fills from the first run of this version, and `data/history.json`: each
+  rider's best jump per month for the year before, read back from the WOO and
+  Surfr leaderboards. That backfill runs once by itself a minute after the
+  first start (it takes ~2 minutes per month, in the background); admins can
+  rerun it with `/backfill [months]` (up to 24).
 - **Profils**: kites, weight and home location (from the phone, Telegram 8.0+)
   as a form, plus the wind range each of your kites gets picked for.
 - **Spot editor** (from a spot's "🧭 Virzieni kartē"): the spot on an
@@ -291,8 +295,10 @@ The daily digest, the rider recap and records stay chat messages.
 ### Map digest
 
 With `digest_map: true` the 07:00 post becomes a picture: the spots on a map
-of the coast, each labelled with today's window (blue for a kite, light blue
-for foil-only, grey for no wind). The usual text rides along in the photo's
+of the coast — only those with wind today — each with one row per rideable
+period (its hours and wind range; a day whose wind changes gets several rows),
+coloured by wind strength from green (<6 m/s) to violet (14+ m/s) with the
+ranges in a legend. The usual text rides along in the photo's
 caption as a collapsed quote, so nothing is lost; when it is longer than a
 caption allows, it follows as a normal message. Windless mornings stay text.
 `/testdigest` sends the map too, so you can check it any time.

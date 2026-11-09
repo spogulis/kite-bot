@@ -82,6 +82,8 @@ def main() -> None:
         raise SystemExit('JobQueue missing — install "python-telegram-bot[job-queue]"')
     handlers.register(app)
     app.job_queue.run_daily(handlers.daily_job, time=post_time, name="daily-digest")
+    # once, a minute after start: fill the riders' progress chart if it has no past yet
+    app.job_queue.run_once(handlers.history_job, when=60, name="history-backfill")
     log.info(
         "starting: daily digest at %s (%s), %d spot(s) configured",
         settings.daily_post_time, settings.timezone, len(config.load_spots()),

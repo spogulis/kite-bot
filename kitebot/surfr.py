@@ -155,3 +155,35 @@ async def find_riders(token: str, query: str, limit: int = 6) -> list:
             if found:
                 break
     return list(found.values())
+
+
+class _AllFound(Exception):
+    """Ends a board scan early once every tracked rider has turned up."""
+
+
+async def range_best(token: str, date_from: str, date_to: str, rider_ids: set) -> dict:
+    """{rider_id: {"height_m", "spot_name", "spot_country"}}: each rider's best
+    jump between two local dates (inclusive), for the history backfill. The
+    board is sorted by height, so a rider's first entry is their best, and the
+    scan stops as soon as every rider has one."""
+    stats: dict = {}
+
+    def on_item(item):
+        rider_id, _ = _item_user(item)
+        if rider_id in rider_ids and rider_id not in stats:
+            stats[rider_id] = {
+                "height_m": float(item.get("value") or 0),
+                "spot_name": str(item.get("spotName") or "").strip(),
+                "spot_country": str(item.get("spotCountry") or "").strip(),
+            }
+            if len(stats) == len(rider_ids):
+                raise _AllFound
+
+    if rider_ids:
+        async with httpx.AsyncClient() as client:
+            try:
+                await _scan(client, token, "height", "custom", on_item,
+                            date_from=date_from, date_to=date_to)
+            except _AllFound:
+                pass
+    return stats

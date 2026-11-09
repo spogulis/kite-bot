@@ -4,11 +4,15 @@
 "use strict";
 (function () {
   const tg = window.Telegram && window.Telegram.WebApp;
+  // "only spots with wind" is on unless this viewer switched it off before
+  function storedWindyOnly() {
+    try { return localStorage.getItem("kb.windyOnly") !== "0"; } catch (e) { return true; }
+  }
   const view = document.getElementById("view");
   const title = document.getElementById("title");
   const back = document.getElementById("back");
   const state = {
-    day: 0, dry: false, cache: {}, ticket: 0,
+    day: 0, dry: false, cache: {}, ticket: 0, windyOnly: storedWindyOnly(),
     route: { day: 0, prefer: "any", km: 100, dry: false, home: true },
     profile: null, draft: null,
     riders: null, ridersTab: "records", hidden: new Set(),
@@ -106,7 +110,16 @@
     back.hidden = true;
     if (tg && tg.BackButton) tg.BackButton.hide();
     const mid = Math.round((data.day_start + data.day_end) / 2);
-    const cards = data.spots.map((s) => {
+    // spots with wind first, earliest window first; calm ones after, or hidden
+    const ranked = data.spots.map((s, order) => {
+      const shown = shownWindows(s);
+      const starts = s.windows.filter((w, i) => shown.has(i)).map((w) => w.start_h);
+      return { s, order, first: starts.length ? Math.min(...starts) : null };
+    });
+    const windy = ranked.filter((r) => r.first !== null).sort((a, b) => a.first - b.first || a.order - b.order);
+    const calm = ranked.filter((r) => r.first === null);
+    const visible = state.windyOnly ? windy : windy.concat(calm);
+    const cards = visible.map(({ s }) => {
       const shown = shownWindows(s);
       const best = bestWindow(s, shown);
       let pill = '<span class="pill none">—</span>';
@@ -132,11 +145,18 @@
         + `<div class="row"><span class="name">${esc(s.name)}</span>${pill}</div>`
         + `<div class="strip">${cells.join("")}</div><div class="sub">${esc(sub)}</div></a>`;
     });
+    const empty = !data.spots.length ? "Vēl nav neviena spota."
+      : "Šai dienai nevienā spotā nav braucama vēja.";
+    const hidden = state.windyOnly && calm.length
+      ? `<p class="note">Paslēpti ${calm.length} spoti bez vēja.</p>` : "";
     view.innerHTML = dayTabs(data)
-      + `<div class="bar"><label class="toggle"><input type="checkbox" id="dry"${state.dry ? " checked" : ""}> ☀️ Bez lietus</label>`
-      + '<span><i class="sw" style="background:var(--kite)"></i>kaits<i class="sw" style="background:var(--foil)"></i>matracis</span></div>'
+      + '<div class="bar"><div class="switches">'
+      + `<label class="toggle"><input type="checkbox" id="windy"${state.windyOnly ? " checked" : ""}> 💨 Tikai ar vēju</label>`
+      + `<label class="toggle"><input type="checkbox" id="dry"${state.dry ? " checked" : ""}> ☀️ Bez lietus</label></div>`
+      + '<span class="key"><i class="sw" style="background:var(--kite)"></i>kaits<i class="sw" style="background:var(--foil)"></i>matracis</span></div>'
       + `<div class="axis"><span>${pad(data.day_start)}</span><span>${pad(mid)}</span><span>${pad(data.day_end)}</span></div>`
-      + (cards.length ? cards.join("") : '<p class="msg">Vēl nav neviena spota.</p>')
+      + (cards.length ? cards.join("") : `<p class="msg">${empty}</p>`)
+      + hidden
       + (data.is_admin ? '<a class="btn ghost" href="#/edit">➕ Jauns spots</a>' : "")
       + `<p class="foot">Atjaunots ${esc(data.updated)} · Open-Meteo</p>`;
   }
@@ -429,6 +449,7 @@
     ["var(--foil)", ""], ["var(--warn)", "2 3"], ["#5B8C3A", "8 3"],
   ];
   const shortDate = (iso) => `${iso.slice(8, 10)}.${iso.slice(5, 7)}`;
+  const MONTHS_LV = ["jan", "feb", "mar", "apr", "mai", "jūn", "jūl", "aug", "sep", "okt", "nov", "dec"];
   const dayNumber = (iso) => Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10)) / 864e5;
 
   function progressChart(series) {
@@ -448,8 +469,11 @@
     }
     const ticks = [...new Set(all.map(([d]) => d))].sort();
     const every = Math.max(1, Math.ceil(ticks.length / 4));
+    // over months, "11.25" reads as a day — name the month and year instead
+    const long = last - first > 120;
+    const label = (d) => (long ? `${MONTHS_LV[+d.slice(5, 7) - 1]} ’${d.slice(2, 4)}` : shortDate(d));
     ticks.filter((_, i) => i % every === 0).forEach((d) => {
-      svg += `<text x="${x(d).toFixed(1)}" y="${H - 14}" text-anchor="middle" font-size="12" style="fill:var(--hint)">${shortDate(d)}</text>`;
+      svg += `<text x="${x(d).toFixed(1)}" y="${H - 14}" text-anchor="middle" font-size="12" style="fill:var(--hint)">${label(d)}</text>`;
     });
     const labels = [];
     series.forEach((s) => {
@@ -483,7 +507,7 @@
     }
     if (state.ridersTab === "progress") {
       if (!d.series.length) {
-        return '<p class="msg">Grafiks sāks krāties ar nākamo rīta ziņu — bots katru rītu pieraksta vakardienas sesijas.</p>';
+        return '<p class="msg">Vēsture vēl ielādējas (pēc atjaunināšanas tas aizņem ~30 min) — pamēģini vēlāk.</p>';
       }
       const indexed = d.series.map((s, index) => ({ ...s, index }));
       const chips = indexed.map((s) => {
@@ -492,8 +516,10 @@
       }).join("");
       const shown = indexed.filter((s) => !state.hidden.has(s.name));
       return `<div class="rchips">${chips}</div>`
-        + `<div class="card progress"><h2>Labākais lēciens sesijā, m</h2>${shown.length ? progressChart(shown) : '<p class="note">Ieslēdz kādu braucēju.</p>'}`
-        + `<p class="note">Aplis — labākais žurnālā · žurnāls kopš ${shortDate(d.since)}</p></div>`;
+        + `<div class="card progress"><h2>Labākais lēciens, m</h2>${shown.length ? progressChart(shown) : '<p class="note">Ieslēdz kādu braucēju.</p>'}`
+        + `<p class="note">Aplis — labākais · ${d.daily_since
+          ? `līdz ${shortDate(d.daily_since)} viens punkts mēnesī, pēc tam katra sesija`
+          : "viens punkts mēnesī (mēneša labākais)"}</p></div>`;
     }
     if (!d.latest.date) return '<p class="msg">Vēl nav pierakstīta neviena sesija.</p>';
     const rows = d.latest.entries.map((e) => {
@@ -855,6 +881,10 @@
   view.addEventListener("change", (event) => {
     const id = event.target.id;
     if (id === "dry") state.dry = event.target.checked;
+    else if (id === "windy") {
+      state.windyOnly = event.target.checked;
+      try { localStorage.setItem("kb.windyOnly", state.windyOnly ? "1" : "0"); } catch (e) { /* storage off */ }
+    }
     else if (id === "rdry") state.route.dry = event.target.checked;
     else if (id === "rhome") state.route.home = event.target.checked;
     else return;

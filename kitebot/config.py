@@ -31,6 +31,7 @@ USERS_FILE = DATA_DIR / "users.json"
 FORECAST_LOG_FILE = DATA_DIR / "forecast_log.json"
 FORECAST_LOG_DAYS = 7
 SESSIONS_FILE = DATA_DIR / "sessions.json"
+HISTORY_FILE = DATA_DIR / "history.json"
 
 # Wind units supported by Open-Meteo's wind_speed_unit parameter.
 UNIT_LABELS = {"kn": "kn", "ms": "m/s", "kmh": "km/h", "mph": "mph"}
@@ -172,7 +173,7 @@ class Settings:
     timezone: str = "Europe/Riga"
     wind_unit: str = "ms"
     daily_post_time: str = "07:00"
-    daily_greeting: str = "Labrīt, kaiteri!"
+    daily_greeting: str = ""  # optional first line of the morning post
     forecast_days: int = 3
     post_when_no_wind: bool = False  # windless morning: only yesterday's riders, if anyone rode
     min_window_hours: int = 2
@@ -507,6 +508,25 @@ def record_sessions(date_iso: str, entries: list) -> None:
     SESSIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
     SESSIONS_FILE.write_text(json.dumps(dict(sorted(days.items())), indent=1, ensure_ascii=False),
                              encoding="utf-8")
+
+
+def load_history() -> dict:
+    """{"YYYY-MM": {"date": iso, "entries": [...]}} — each rider's best jump per
+    month from before the session log existed, filled by the backfill."""
+    if not HISTORY_FILE.exists():
+        return {}
+    try:
+        raw = json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        log.warning("could not parse %s, treating as empty", HISTORY_FILE)
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def save_history(months: dict) -> None:
+    HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    HISTORY_FILE.write_text(json.dumps(dict(sorted(months.items())), indent=1, ensure_ascii=False),
+                            encoding="utf-8")
 
 
 def to_knots(value: float, unit: str) -> float:

@@ -123,14 +123,22 @@ def _days_lv(days: int) -> str:
     return "šodienai" if days == 1 else f"nākamās {days} dienas"
 
 
+NO_WIND_LV = "Nevienā spotā nav braucama vēja."
+
+
 def build_digest(results: list, settings: Settings, title: str = "Kaita prognoze",
-                 day_span: "int | None" = None) -> str:
+                 day_span: "int | None" = None, header: bool = True,
+                 windy_only: bool = False) -> str:
+    """header=False drops the title line; windy_only leaves out spots with
+    nothing rideable (spots whose forecast failed still show)."""
     label = unit_label(settings.wind_unit)
     span = settings.forecast_days if day_span is None else day_span
-    header = f"🪁 <b>{html.escape(title)}</b> · {_days_lv(span)}"
+    head = [f"🪁 <b>{html.escape(title)}</b> · {_days_lv(span)}"] if header else []
     if results and not any(r.windows or r.error for r in results):
-        return header + "\n\nNevienā spotā nav braucama vēja."
-    blocks = [header]
+        return "\n\n".join(head + [NO_WIND_LV])
+    if windy_only:
+        results = [r for r in results if r.windows or r.error]
+    blocks = head
     for r in results:
         lines = [f"<b>{html.escape(r.spot.name)}</b>"]
         if r.error:

@@ -1,5 +1,7 @@
-"""The morning digest as a picture: a map of the spots, each labelled with
-today's rideable window, drawn with Pillow over a bundled coastline.
+"""The morning digest as a picture: a map of the spots that have wind today,
+each with one row per rideable period — its hours and wind range, coloured by
+wind strength from green (light) to violet (strong) — drawn with Pillow over
+a bundled coastline.
 
 The coastline (assets/baltic_land.json) is Natural Earth 1:10m land and minor
 islands — public domain — cut to the eastern Baltic and simplified. Spots
@@ -14,6 +16,8 @@ from functools import lru_cache
 from math import cos, radians
 from pathlib import Path
 
+from .config import UNIT_LABELS, to_knots
+
 log = logging.getLogger(__name__)
 
 ASSET = Path(__file__).resolve().parent / "assets" / "baltic_land.json"
@@ -25,9 +29,17 @@ LAND = (231, 235, 221)
 SHORE = (217, 205, 170)
 NAVY = (16, 32, 46)
 WHITE = (251, 251, 248)
-KITE = ((34, 112, 154), WHITE)          # badge fill, text
-FOIL = ((156, 201, 222), NAVY)
-NONE = ((227, 233, 229), (74, 87, 99))
+
+KNOT_MS = 0.514444
+# Wind bands in m/s (upper edge, fill, text), light to strong: green -> violet.
+BANDS = [
+    (6.0, (46, 158, 79), WHITE),
+    (8.0, (141, 191, 46), NAVY),
+    (10.0, (227, 182, 32), NAVY),
+    (12.0, (232, 116, 44), NAVY),
+    (14.0, (214, 58, 58), WHITE),
+    (None, (142, 68, 173), WHITE),
+]
 
 FONTS = {
     False: ["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", "DejaVuSans.ttf",
@@ -55,21 +67,41 @@ def _font(size: int, bold: bool = False):
     return ImageFont.load_default(size=size)
 
 
-def spot_label(result) -> tuple:
-    """(badge text, colours) for one spot's day: the first kite window,
-    else the first foil-only one, with "+n" when there are more."""
-    if result.error:
-        return f"{result.spot.name} ?", NONE
-    windows = sorted(result.windows, key=lambda w: w.start)
-    kite = [w for w in windows if not w.foil_only]
-    first = (kite or windows or [None])[0]
-    if first is None:
-        return f"{result.spot.name} —", NONE
-    more = f" +{len(windows) - 1}" if len(windows) > 1 else ""
-    hours = f"{first.start:%H}–{first.end:%H}{more}"
-    if first.foil_only:
-        return f"{result.spot.name} {hours} matracis", FOIL
-    return f"{result.spot.name} {hours}", KITE
+def band(mean_speed: float, unit: str) -> tuple:
+    """(fill, text colour) for a wind speed given in the configured unit."""
+    ms = to_knots(mean_speed, unit) * KNOT_MS
+    for top, fill, ink in BANDS:
+        if top is None or ms < top:
+            return fill, ink
+    return BANDS[-1][1:]
+
+
+def legend_labels(unit: str) -> list:
+    """The band edges in the configured unit, e.g. ["<6", "6–8", …, "14+"]."""
+    def conv(ms: float) -> str:
+        if unit == "ms":
+            return f"{ms:g}"
+        return str(round(ms / KNOT_MS / to_knots(1.0, unit)))  # m/s -> knots -> unit
+    edges = [top for top, _, _ in BANDS if top is not None]
+    labels = [f"<{conv(edges[0])}"]
+    labels += [f"{conv(a)}–{conv(b)}" for a, b in zip(edges, edges[1:])]
+    labels.append(f"{conv(edges[-1])}+")
+    return labels
+
+
+def period_rows(result, unit: str) -> list:
+    """[(text, fill, ink)] — one row per rideable period of the day, in time
+    order. Windows are already split where the wind changes (wind_band), so
+    each row is one kite size's worth of wind."""
+    label = UNIT_LABELS.get(unit, unit)
+    rows = []
+    for w in sorted(result.windows, key=lambda w: w.start):
+        lo, hi = round(w.min_speed), round(w.max_speed)
+        wind = f"{lo} {label}" if lo == hi else f"{lo}–{hi} {label}"
+        text = f"{w.start:%H}–{w.end:%H}  {wind}" + ("  matracis" if w.foil_only else "")
+        fill, ink = band((w.min_speed + w.max_speed) / 2, unit)
+        rows.append((text, fill, ink))
+    return rows
 
 
 def covered(spots: list) -> bool:
@@ -88,8 +120,8 @@ class _View:
         self.lon_c = (min(lons) + max(lons)) / 2
         self.k = cos(radians(self.lat_c))
         aspect = WIDTH / HEIGHT
-        half_h = max((max(lats) - min(lats)) / 2 * 1.45, 0.3)
-        half_w = max((max(lons) - min(lons)) * self.k / 2 * 1.45 + 0.25, half_h * aspect)
+        half_h = max((max(lats) - min(lats)) / 2 * 1.5, 0.3)
+        half_w = max((max(lons) - min(lons)) * self.k / 2 * 1.5 + 0.3, half_h * aspect)
         self.half_w, self.half_h = half_w, max(half_h, half_w / aspect)
 
     def xy(self, lon: float, lat: float) -> tuple:
@@ -103,29 +135,34 @@ def _overlaps(box, boxes) -> bool:
     return any(x0 < b[2] and b[0] < x1 and y0 < b[3] and b[1] < y1 for b in boxes)
 
 
-def render(results: list, day_label: str) -> "bytes | None":
-    """PNG of today's map, or None when the spots fall outside the coastline."""
-    spots = [r.spot for r in results]
-    if not covered(spots):
+def render(results: list, day_label: str, unit: str = "ms") -> "bytes | None":
+    """PNG of today's map with only the spots that have wind, or None when
+    none has or they fall outside the coastline."""
+    windy = [r for r in results if r.windows and not r.error]
+    if not windy or not covered([r.spot for r in windy]):
         return None
     from PIL import Image, ImageDraw
 
     s = SCALE
-    view = _View(spots)
+    view = _View([r.spot for r in windy])
     image = Image.new("RGB", (WIDTH * s, HEIGHT * s), SEA)
     draw = ImageDraw.Draw(image)
     for ring in _coast()["rings"]:
-        points = [view.xy(lon, lat) for lon, lat in ring]
-        draw.polygon(points, fill=LAND, outline=SHORE, width=3 * s)
+        draw.polygon([view.xy(lon, lat) for lon, lat in ring], fill=LAND, outline=SHORE, width=3 * s)
 
-    font = _font(30 * s, bold=True)
-    pins = [view.xy(r.spot.lon, r.spot.lat) for r in results]
+    title_font = _font(30 * s, bold=True)
+    row_font = _font(26 * s, bold=True)
+    pad, row_gap, row_h = 12 * s, 6 * s, 40 * s
+    pins = [view.xy(r.spot.lon, r.spot.lat) for r in windy]
     taken = [(x - 16 * s, y - 16 * s, x + 16 * s, y + 16 * s) for x, y in pins]
     margin = 12 * s
-    for result, (x, y) in zip(results, pins):
-        text, (fill, ink) = spot_label(result)
-        left, top, right, bottom = draw.textbbox((0, 0), text, font=font)
-        w, h = right - left + 24 * s, bottom - top + 16 * s
+    legend_h = 64 * s  # keep labels off the legend strip at the bottom
+    for result, (x, y) in zip(windy, pins):
+        rows = period_rows(result, unit)
+        t_left, t_top, t_right, t_bottom = draw.textbbox((0, 0), result.spot.name, font=title_font)
+        widths = [draw.textbbox((0, 0), text, font=row_font)[2] for text, _, _ in rows]
+        w = max(t_right - t_left, *(rw + 2 * pad for rw in widths)) + 2 * pad
+        h = (t_bottom - t_top) + pad * 2 + len(rows) * (row_h + row_gap)
         gap = 24 * s
         candidates = [(x + gap, y - h / 2), (x - gap - w, y - h / 2),
                       (x - w / 2, y - gap - h), (x - w / 2, y + gap)]
@@ -133,27 +170,33 @@ def render(results: list, day_label: str) -> "bytes | None":
         for bx, by in candidates:
             trial = (bx, by, bx + w, by + h)
             inside = (margin <= bx and bx + w <= WIDTH * s - margin
-                      and margin <= by and by + h <= HEIGHT * s - margin)
+                      and margin <= by and by + h <= HEIGHT * s - margin - legend_h)
             if inside and not _overlaps(trial, taken):
                 box = trial
                 break
         if box is None:  # crowded: take the first spot inside the picture
             bx, by = candidates[0]
             bx = min(max(bx, margin), WIDTH * s - margin - w)
-            by = min(max(by, margin), HEIGHT * s - margin - h)
+            by = min(max(by, margin), HEIGHT * s - margin - legend_h - h)
             box = (bx, by, bx + w, by + h)
         taken.append(box)
-        draw.rounded_rectangle(box, radius=12 * s, fill=fill, outline=WHITE, width=2 * s)
-        draw.text((box[0] + 12 * s - left, box[1] + 8 * s - top), text, font=font, fill=ink)
-    for (x, y), result in zip(pins, results):
-        fill = spot_label(result)[1][0]
-        r = 13 * s
-        draw.ellipse((x - r, y - r, x + r, y + r), fill=fill, outline=WHITE, width=4 * s)
-        draw.ellipse((x - r - 2 * s, y - r - 2 * s, x + r + 2 * s, y + r + 2 * s),
-                     outline=NAVY, width=2 * s)
+        draw.rounded_rectangle(box, radius=14 * s, fill=WHITE, outline=NAVY, width=2 * s)
+        draw.text((box[0] + pad - t_left, box[1] + pad - t_top), result.spot.name,
+                  font=title_font, fill=NAVY)
+        ry = box[1] + pad + (t_bottom - t_top) + pad
+        for text, fill, ink in rows:
+            row = (box[0] + pad, ry, box[2] - pad, ry + row_h)
+            draw.rounded_rectangle(row, radius=10 * s, fill=fill)
+            r_left, r_top, _, r_bottom = draw.textbbox((0, 0), text, font=row_font)
+            draw.text((row[0] + pad - r_left, ry + (row_h - (r_bottom - r_top)) / 2 - r_top),
+                      text, font=row_font, fill=ink)
+            ry += row_h + row_gap
+    for x, y in pins:
+        r = 11 * s
+        draw.ellipse((x - r, y - r, x + r, y + r), fill=NAVY, outline=WHITE, width=4 * s)
 
     _pill(draw, (20 * s, 20 * s), day_label, _font(32 * s, bold=True))
-    _legend(draw, (20 * s, HEIGHT * s - 20 * s), _font(26 * s))
+    _legend(draw, (20 * s, HEIGHT * s - 20 * s), _font(24 * s, bold=True), unit)
     out = io.BytesIO()
     image.resize((WIDTH, HEIGHT), Image.LANCZOS).save(out, format="PNG", optimize=True)
     return out.getvalue()
@@ -167,20 +210,27 @@ def _pill(draw, at: tuple, text: str, font) -> None:
     draw.text((box[0] + 16 * s - left, box[1] + 10 * s - top), text, font=font, fill=NAVY)
 
 
-def _legend(draw, bottom_left: tuple, font) -> None:
+def _legend(draw, bottom_left: tuple, font, unit: str) -> None:
+    """A strip of the wind bands, each swatch labelled with its range."""
     s = SCALE
-    items = [("kaits", KITE[0]), ("matracis", FOIL[0]), ("nav vēja", NONE[0])]
-    widths = [draw.textbbox((0, 0), text, font=font)[2] for text, _ in items]
+    label = UNIT_LABELS.get(unit, unit)
+    items = list(zip(legend_labels(unit), BANDS))
     _, top, _, bottom = draw.textbbox((0, 0), "Ag", font=font)
-    height = bottom - top + 20 * s
-    width = sum(widths) + len(items) * (24 + 12 + 20) * s + 12 * s
+    text_h = bottom - top
+    sw_pad = 12 * s
+    widths = [draw.textbbox((0, 0), text, font=font)[2] + 2 * sw_pad for text, _ in items]
+    unit_w = draw.textbbox((0, 0), label, font=font)[2]
+    height = text_h + 2 * sw_pad
+    width = sum(widths) + unit_w + 4 * sw_pad
     x0, y1 = bottom_left
-    box = (x0, y1 - height, x0 + width, y1)
-    draw.rounded_rectangle(box, radius=height // 2, fill=WHITE)
-    x = x0 + 18 * s
-    for (text, colour), w in zip(items, widths):
-        cy = (box[1] + box[3]) / 2
-        draw.rounded_rectangle((x, cy - 12 * s, x + 24 * s, cy + 12 * s), radius=6 * s,
-                               fill=colour, outline=NAVY, width=s)
-        draw.text((x + 36 * s, box[1] + 10 * s - top), text, font=font, fill=NAVY)
-        x += (24 + 12 + 20) * s + w
+    box = (x0, y1 - height - 12 * s, x0 + width, y1)
+    draw.rounded_rectangle(box, radius=14 * s, fill=WHITE)
+    x = x0 + 6 * s
+    for (text, (_, fill, ink)), w in zip(items, widths):
+        cell = (x, box[1] + 6 * s, x + w, box[3] - 6 * s)
+        draw.rounded_rectangle(cell, radius=8 * s, fill=fill)
+        draw.text((x + sw_pad, cell[1] + (cell[3] - cell[1] - text_h) / 2 - top), text,
+                  font=font, fill=ink)
+        x += w + 2 * s
+    draw.text((x + sw_pad, box[1] + (box[3] - box[1] - text_h) / 2 - top), label,
+              font=font, fill=NAVY)

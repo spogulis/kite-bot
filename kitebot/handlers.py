@@ -80,6 +80,7 @@ HELP_LV = """\
 /woorider Vārds — pievienot braucēju no WOO (adminiem)
 /surfrider Vārds — pievienot braucēju no Surfr (adminiem)
 /setrecord Vārds 6.2 — labot rekordu manuāli (adminiem)
+/backfill 12 — ielādēt braucēju vēsturi progresa grafikam (adminiem)
 
 /id — čata un lietotāja ID
 
@@ -1805,7 +1806,9 @@ def _filter_results(results: list, sub: Subscription) -> list:
 
 
 def _daily_text(results: list, settings, extra: "str | None" = None) -> str:
-    digest = build_digest(results, settings, title=DAILY_TITLE_LV, day_span=1)
+    # straight to the point: no title line, only the spots with wind
+    digest = build_digest(results, settings, title=DAILY_TITLE_LV, day_span=1,
+                          header=False, windy_only=True)
     if extra:
         digest = digest + "\n\n" + extra
     if settings.daily_greeting:
@@ -1918,7 +1921,8 @@ def morning_map(results: list, settings) -> "bytes | None":
     day = _today(settings)
     try:
         from . import digestmap
-        return digestmap.render(results, f"{WEEKDAYS_LV[day.weekday()]} {day:%d.%m} · šodien")
+        return digestmap.render(results, f"{WEEKDAYS_LV[day.weekday()]} {day:%d.%m} · šodien",
+                                settings.wind_unit)
     except Exception:  # noqa: BLE001 — any failure falls back to plain text
         log.exception("digest map failed, sending text only")
         return None
@@ -2001,6 +2005,7 @@ def bot_commands(settings) -> list:
         BotCommand("woorider", "pievienot WOO braucēju (adminiem)"),
         BotCommand("surfrider", "pievienot Surfr braucēju (adminiem)"),
         BotCommand("setrecord", "labot braucēja rekordu (adminiem)"),
+        BotCommand("backfill", "ielādēt braucēju vēsturi grafikam (adminiem)"),
         BotCommand("delspot", "dzēst spotu"),
         BotCommand("id", "čata un lietotāja ID"),
         BotCommand("help", "palīdzība"),
@@ -2023,6 +2028,58 @@ async def post_init(app: Application) -> None:
     if settings.webapp_port:
         from . import webapp  # aiohttp is only needed when the server is on
         await webapp.start(app)
+
+
+_backfill_running = False
+
+
+async def _run_backfill(settings, months: int) -> str:
+    global _backfill_running
+    from . import history
+    if _backfill_running:
+        return "Vēsture jau tiek ielādēta."
+    _backfill_running = True
+    try:
+        summary = await history.backfill(settings, months)
+    except Exception:  # noqa: BLE001 — a failed backfill must never take the bot down
+        log.exception("history backfill failed")
+        summary = "Vēstures ielāde neizdevās (sk. žurnālu)."
+    finally:
+        _backfill_running = False
+    log.info("history backfill: %s", summary)
+    return summary
+
+
+async def history_job(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """First start after the update: fill the progress chart's past once."""
+    if config.HISTORY_FILE.exists() or not config.load_riders():
+        return
+    await _run_backfill(config.load_settings(), 12)
+
+
+async def cmd_backfill(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.effective_message
+    if msg is None:
+        return
+    settings = config.load_settings()
+    if not await _can_configure(update, context, settings):
+        return
+    try:
+        months = int((context.args or ["12"])[0])
+    except ValueError:
+        months = 12
+    months = max(1, min(months, 24))
+    await msg.reply_text(f"⏳ Ielādēju braucēju vēsturi par {months} mēnešiem no WOO un Surfr — "
+                         "tas aizņem ~2 min par mēnesi. Atrakstīšu, kad būs gatavs.")
+
+    async def run() -> None:
+        summary = await _run_backfill(settings, months)
+        try:
+            await msg.reply_text("📈 " + summary)
+        except TelegramError as exc:
+            log.warning("backfill reply failed: %s", exc)
+
+    context.application.create_task(run())
 
 
 async def post_shutdown(app: Application) -> None:
@@ -2052,6 +2109,7 @@ def register(app: Application) -> None:
     app.add_handler(CommandHandler("woorider", cmd_woorider))
     app.add_handler(CommandHandler("surfrider", cmd_surfrider))
     app.add_handler(CommandHandler("setrecord", cmd_setrecord))
+    app.add_handler(CommandHandler("backfill", cmd_backfill))
     app.add_handler(CommandHandler("subscribe", cmd_subscribe))
     app.add_handler(CommandHandler("myspots", cmd_myspots))
     app.add_handler(CommandHandler("unsubscribe", cmd_unsubscribe))

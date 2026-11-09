@@ -189,3 +189,6 @@ main { padding-bottom: 88px; }
 }
 .btn.warn { background: transparent; color: var(--warn); border: 2px solid var(--warn); }
 .btn.small { width: auto; padding: 8px 12px; }
+
+.key { white-space: nowrap; }
+a.btn { text-decoration: none; text-align: center; }

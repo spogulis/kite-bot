@@ -191,11 +191,16 @@ GULF = [SpotResult(spot=Spot(name="Engure", lat=57.16, lon=23.23), windows=[wind
         SpotResult(spot=Spot(name="Bez datiem", lat=57.0, lon=24.0), error="down")]
 
 
-def test_spot_labels():
+def test_period_rows_one_per_window_coloured_by_wind():
     from kitebot import digestmap
-    labels = [digestmap.spot_label(r)[0] for r in GULF]
-    assert labels == ["Engure 10–14", "Mērsrags 13–18 +1", "Salacgrīva 12–15 matracis",
-                      "Saulkrasti —", "Bez datiem ?"]
+    rows = digestmap.period_rows(GULF[1], "ms")  # Mērsrags: foil 9–11, then kite 13–18
+    assert [t for t, _, _ in rows] == ["09–11  6–8 m/s  matracis", "13–18  6–8 m/s"]
+    assert digestmap.band(4, "ms")[0] == digestmap.BANDS[0][1]   # light: green
+    assert digestmap.band(9, "ms")[0] == digestmap.BANDS[2][1]
+    assert digestmap.band(20, "ms")[0] == digestmap.BANDS[-1][1]  # strong: violet
+    assert digestmap.band(20, "kn")[0] == digestmap.BANDS[3][1]   # 20 kn ~ 10.3 m/s
+    assert digestmap.legend_labels("ms") == ["<6", "6–8", "8–10", "10–12", "12–14", "14+"]
+    assert digestmap.legend_labels("kn") == ["<12", "12–16", "16–19", "19–23", "23–27", "27+"]
 
 
 def test_map_needs_spots_inside_the_coastline():
@@ -213,7 +218,10 @@ def test_map_renders_a_png():
     from PIL import Image
     import io
     assert Image.open(io.BytesIO(png)).size == (digestmap.WIDTH, digestmap.HEIGHT)
-    assert digestmap.render([SpotResult(spot=Spot(name="Rust", lat=47.8, lon=16.7))], "x") is None
+    assert digestmap.render([SpotResult(spot=Spot(name="Rust", lat=47.8, lon=16.7),
+                                        windows=[window(10, 12)])], "x") is None  # off the map
+    calm = [SpotResult(spot=r.spot) for r in GULF]
+    assert digestmap.render(calm, "x") is None  # nobody has wind
 
 
 def test_photo_caption_folds_short_text_and_refuses_long():
@@ -299,3 +307,71 @@ def test_coastline_asset_is_sane():
     assert "Natural Earth" in data["source"] and len(data["rings"]) > 50
     lon0, lat0, lon1, lat1 = data["bbox"]
     assert all(lon0 <= x <= lon1 and lat0 <= y <= lat1 for ring in data["rings"] for x, y in ring)
+
+
+# --- history backfill --------------------------------------------------------------
+
+def test_month_ranges():
+    from datetime import date
+    from kitebot import history
+    ranges = history.month_ranges(date(2026, 11, 10), 3)
+    assert [r[0] for r in ranges] == ["2026-09", "2026-10", "2026-11"]
+    sep, _, nov = ranges
+    assert (sep[1], sep[2], sep[3]) == (date(2026, 9, 1), date(2026, 9, 30), date(2026, 9, 15))
+    assert (nov[1], nov[2], nov[3]) == (date(2026, 11, 1), date(2026, 11, 9), date(2026, 11, 9))
+    # on the 1st, the new month has no days yet: the last full month leads
+    assert history.month_ranges(date(2026, 11, 1), 1)[0][0] == "2026-10"
+
+
+def test_backfill_fills_history_and_survives_a_failing_app(tmp_path, monkeypatch):
+    from datetime import date
+    from kitebot import history, surfr
+    monkeypatch.setattr(config, "HISTORY_FILE", tmp_path / "history.json")
+    monkeypatch.setattr(config, "load_spots", lambda settings=None: [])
+    monkeypatch.setattr(config, "load_riders", lambda: [
+        {"name": "Alfa", "record_height_m": 9, "ids": {"woo": "a"}},
+        {"name": "Beta", "record_height_m": 6, "ids": {"surfr": "2"}}])
+
+    async def woo_best(token, start, end, ids):
+        return {"a": {"height_m": 8.0 + start % 3}}
+
+    async def surfr_down(token, date_from, date_to, ids):
+        raise surfr.SurfrError("down")
+
+    monkeypatch.setattr(woo, "range_best", woo_best)
+    monkeypatch.setattr(surfr, "range_best", surfr_down)
+    summary = asyncio.run(history.backfill(Settings(), 2, today=date(2026, 11, 10)))
+    assert "2 mēneši" in summary and "Surfr" in summary
+    saved = config.load_history()
+    assert list(saved) == ["2026-10", "2026-11"]
+    assert saved["2026-10"]["date"] == "2026-10-15"
+    assert [e["name"] for e in saved["2026-10"]["entries"]] == ["Alfa"]
+
+
+def test_range_best_stops_once_everyone_is_found(monkeypatch):
+    from kitebot import surfr
+    pages = [[{"user": {"id": "1"}, "value": 9.0, "spotName": "Engure"},
+              {"user": {"id": "2"}, "value": 7.0}],
+             [{"user": {"id": "1"}, "value": 5.0}]]
+    asked = []
+
+    async def page(client, token, category, period, number, date_from=None, date_to=None):
+        asked.append(number)
+        return pages[number] if number < len(pages) else []
+
+    monkeypatch.setattr(surfr, "_page", page)
+    best = asyncio.run(surfr.range_best("t", "2026-10-01", "2026-10-31", {"1", "2"}))
+    assert best == {"1": {"height_m": 9.0, "spot_name": "Engure", "spot_country": ""},
+                    "2": {"height_m": 7.0, "spot_name": "", "spot_country": ""}}
+
+
+def test_riders_payload_puts_monthly_history_before_sessions():
+    riders = [{"name": "Alfa", "record_height_m": 11.7, "ids": {"woo": "a"}}]
+    history = {"2026-09": {"date": "2026-09-15", "entries": [{"name": "Alfa", "height_m": 10.0}]},
+               "2026-10": {"date": "2026-10-15", "entries": [{"name": "Gone", "height_m": 3.0}]}}
+    sessions = {"2026-11-08": [{"name": "Alfa", "height_m": 11.7}]}
+    out = webapp.riders_payload(riders, sessions, history)
+    assert out["series"] == [{"name": "Alfa", "points": [["2026-09-15", 10.0], ["2026-11-08", 11.7]]}]
+    assert out["since"] == "2026-09-15" and out["daily_since"] == "2026-11-08"
+    only_history = webapp.riders_payload(riders, {}, history)
+    assert only_history["since"] == "2026-09-15" and only_history["daily_since"] is None

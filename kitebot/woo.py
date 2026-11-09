@@ -341,3 +341,34 @@ def session_entries(riders: list, stats: dict, known_spots=()) -> list:
             "spot": _spot_label(sources, known_spots) or None,
         })
     return entries
+
+
+class _AllFound(Exception):
+    """Ends a board scan early once every tracked rider has turned up."""
+
+
+async def range_best(token: str, start: int, end: int, rider_ids: set) -> dict:
+    """{woo_id: {"height_m", "spot_name", "kite"}}: each rider's best jump in
+    [start, end) epoch seconds, for the history backfill. Only the jump board
+    is read (distance totals don't make a progress line), and the scan stops
+    once every tracked rider has been seen."""
+    stats: dict = {}
+
+    def on_item(item):
+        woo_id, _ = _item_user(item)
+        if woo_id in rider_ids and woo_id not in stats:
+            stats[woo_id] = {"height_m": float(item.get("score") or 0)}
+            for key, raw in (("spot_name", item.get("spot")), ("kite", item.get("gear"))):
+                value = str(raw or "").strip()
+                if value:
+                    stats[woo_id][key] = value
+            if len(stats) == len(rider_ids):
+                raise _AllFound
+
+    if rider_ids:
+        async with httpx.AsyncClient() as client:
+            try:
+                await _scan(client, token, "height", "big_air", start, end, on_item)
+            except _AllFound:
+                pass
+    return stats

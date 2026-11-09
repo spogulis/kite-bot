@@ -623,7 +623,8 @@ def test_daily_job_windless_morning_sends_only_yesterdays_riders(tmp_path, monke
     assert morning(no_wind, someone_rode) == [recap]
 
     [text] = morning(windy, someone_rode)
-    assert text.startswith("Labrīt, kaiteri!")
+    # no greeting and no title line: the windy spot comes first
+    assert text.startswith("<b>Engure</b>\n✅")
     assert text.endswith("\n\n" + recap)
 
     monkeypatch.setattr(config, "load_settings", lambda: Settings(post_when_no_wind=True))
@@ -1039,3 +1040,23 @@ def test_retry_delay_is_jittered():
     samples = {_jittered(base) for _ in range(50)}
     assert len(samples) > 1                      # not a fixed delay any more
     assert all(0.75 * base <= s <= 1.25 * base for s in samples)
+
+
+def test_daily_text_drops_greeting_title_and_calm_spots():
+    from datetime import timedelta
+
+    from kitebot import handlers
+    from kitebot.analysis import Window
+    from kitebot.config import Settings
+    from kitebot.messages import SpotResult
+
+    noon = datetime(2026, 11, 9, 12, tzinfo=TZ)
+    w = Window(start=noon, end=noon + timedelta(hours=3), min_speed=8, max_speed=10,
+               max_gust=13, direction=45)
+    results = [SpotResult(spot=spot(name="Calm")), SpotResult(spot=spot(name="Windy"), windows=[w]),
+               SpotResult(spot=spot(name="Broken"), error="down")]
+    text = handlers._daily_text(results, Settings())
+    assert "Calm" not in text and "Kaita prognoze" not in text and "Labrīt" not in text
+    assert text.startswith("<b>Windy</b>") and "Broken" in text
+    greeted = handlers._daily_text(results, Settings(daily_greeting="Labrīt, kaiteri!"))
+    assert greeted.startswith("Labrīt, kaiteri!\n\n<b>Windy</b>")
