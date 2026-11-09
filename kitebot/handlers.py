@@ -12,7 +12,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import (
+    BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, MenuButtonWebApp, Update, WebAppInfo,
+)
 from telegram.constants import ChatAction, ChatMemberStatus, ChatType, ParseMode
 from telegram.error import BadRequest, ChatMigrated, Forbidden, TelegramError
 from telegram.ext import (
@@ -49,6 +51,7 @@ HELP_LV = """\
 /prognoze — prognoze visiem spotiem
 /prognoze sauss — tikai logi bez lietus
 /marsruts — dienas maršruts, ja vējš maina spotus
+/app — prognoze ar grafikiem (Mini App)
 
 <b>Mans profils</b>
 /home — saglabāt mājas vietu maršrutiem
@@ -281,10 +284,61 @@ async def _run_check(context: ContextTypes.DEFAULT_TYPE, chat_id: int, thread_id
         )
 
 
+APP_HELP_LV = "/app — prognoze ar grafikiem (Mini App)\n"
+
+
+def help_text(settings) -> str:
+    if settings.webapp_url or settings.webapp_short_name:
+        return HELP_LV
+    return HELP_LV.replace(APP_HELP_LV, "")
+
+
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.effective_message
     if msg is not None:
-        await msg.reply_html(HELP_LV)
+        await msg.reply_html(help_text(config.load_settings()))
+
+
+# --- Mini App ------------------------------------------------------------------
+
+WEBAPP_BUTTON_LV = "📊 Atvērt prognozi"
+WEBAPP_MENU_LV = "Prognoze"
+WEBAPP_OFF_LV = ("Mini App vēl nav ieslēgta — config.yaml vajag webapp_url "
+                 "(un grupām webapp_short_name). Sk. README.")
+
+
+def webapp_link(settings, bot_username: "str | None") -> "str | None":
+    """t.me direct link to the Mini App — the only way to open one from a group."""
+    if settings.webapp_short_name and bot_username:
+        return f"https://t.me/{bot_username}/{settings.webapp_short_name}"
+    return None
+
+
+def webapp_markup(settings, chat_id: int, bot_username: "str | None",
+                  start: str = "") -> "InlineKeyboardMarkup | None":
+    """A button that opens the Mini App, or None when it is not configured.
+
+    Telegram allows web_app buttons in private chats only; groups need the
+    t.me/<bot>/<app> link instead, with `start` passed as startapp."""
+    if chat_id > 0 and settings.webapp_url:
+        button = InlineKeyboardButton(WEBAPP_BUTTON_LV, web_app=WebAppInfo(url=settings.webapp_url))
+        return InlineKeyboardMarkup([[button]])
+    link = webapp_link(settings, bot_username)
+    if link is None:
+        return None
+    url = f"{link}?startapp={start}" if start else link
+    return InlineKeyboardMarkup([[InlineKeyboardButton(WEBAPP_BUTTON_LV, url=url)]])
+
+
+async def cmd_app(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.effective_message
+    if msg is None:
+        return
+    markup = webapp_markup(config.load_settings(), msg.chat_id, context.bot.username)
+    if markup is None:
+        await msg.reply_text(WEBAPP_OFF_LV)
+        return
+    await msg.reply_text("🪁 Prognoze ar grafikiem:", reply_markup=markup)
 
 
 async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1870,16 +1924,18 @@ async def daily_job(context: ContextTypes.DEFAULT_TYPE) -> None:
             log.info("daily digest: nothing rideable and nobody rode, staying quiet in chat %s",
                      sub.chat_id)
             continue
-        await _send_digest(context, sub, cache[key])
+        markup = webapp_markup(settings, sub.chat_id, getattr(context.bot, "username", None))
+        await _send_digest(context, sub, cache[key], markup)
 
 
 async def _send_digest(context: ContextTypes.DEFAULT_TYPE, sub: Subscription,
-                       parts: list) -> None:
+                       parts: list, markup: "InlineKeyboardMarkup | None" = None) -> None:
     async def send_to(chat_id: int) -> None:
-        for part in parts:
+        for i, part in enumerate(parts):
             await context.bot.send_message(
                 chat_id=chat_id, text=part, parse_mode=ParseMode.HTML,
                 message_thread_id=sub.thread_id,
+                reply_markup=markup if i == len(parts) - 1 else None,
             )
 
     try:
@@ -1904,10 +1960,14 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     log.error("error while handling an update", exc_info=context.error)
 
 
-async def post_init(app: Application) -> None:
-    await app.bot.set_my_commands([
+def bot_commands(settings) -> list:
+    """The command menu; /app shows up only once the Mini App is configured."""
+    app_cmd = ([BotCommand("app", "prognoze ar grafikiem (Mini App)")]
+               if settings.webapp_url or settings.webapp_short_name else [])
+    return [
         BotCommand("prognoze", "prognoze visiem spotiem"),
         BotCommand("marsruts", "dienas maršruts starp spotiem"),
+        *app_cmd,
         BotCommand("profile", "mans profils: mājas, kaiti, svars"),
         BotCommand("home", "saglabāt mājas vietu"),
         BotCommand("quiver", "saglabāt kaitu izmērus"),
@@ -1929,13 +1989,36 @@ async def post_init(app: Application) -> None:
         BotCommand("delspot", "dzēst spotu"),
         BotCommand("id", "čata un lietotāja ID"),
         BotCommand("help", "palīdzība"),
-    ])
+    ]
+
+
+async def post_init(app: Application) -> None:
+    settings = config.load_settings()
+    await app.bot.set_my_commands(bot_commands(settings))
     me = await app.bot.get_me()
     log.info("connected as @%s", me.username)
+    if settings.webapp_url:
+        # the button beside the message box in private chats opens the Mini App
+        # (left alone otherwise, so a menu button set in BotFather survives)
+        menu = MenuButtonWebApp(text=WEBAPP_MENU_LV, web_app=WebAppInfo(url=settings.webapp_url))
+        try:
+            await app.bot.set_chat_menu_button(menu_button=menu)
+        except TelegramError as exc:
+            log.warning("could not set the menu button: %s", exc)
+    if settings.webapp_port:
+        from . import webapp  # aiohttp is only needed when the server is on
+        await webapp.start(app)
+
+
+async def post_shutdown(app: Application) -> None:
+    if "webapp_runner" in app.bot_data:
+        from . import webapp
+        await webapp.stop(app)
 
 
 def register(app: Application) -> None:
     app.add_handler(CommandHandler(["start", "menu"], cmd_menu))
+    app.add_handler(CommandHandler("app", cmd_app))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("prognoze", cmd_prognoze))
     app.add_handler(CommandHandler("marsruts", cmd_marsruts))

@@ -34,6 +34,7 @@ class SpotResult:
     spot: Spot
     windows: list = field(default_factory=list)
     error: "str | None" = None
+    points: list = field(default_factory=list)  # the hourly forecast the windows came from
 
 
 def any_windows(results: list) -> bool:

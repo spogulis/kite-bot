@@ -93,6 +93,7 @@ Work the same in groups and in private chats.
 | Command | What it does |
 | --- | --- |
 | `/prognoze` | Forecast for all spots — a pure planning view |
+| `/app` | Opens the Mini App (charts per spot) — needs the [Mini App](#mini-app-optional) setup |
 | `/marsruts` | Day-route planner: a button wizard (day → wind preference: stronger/lighter/any → max total driving distance → dry-only or any rain) that keeps editing one message, then becomes the route. In a DM you can also share your location so the plan accounts for the drive from you (and clips today's windows to your arrival); the DM result has a "📤 Nosūtīt grupai" button |
 | `/home`, `/quiver 12 9 7`, `/weight 85`, `/profile` | Personal profile: saved home location (offered as a "🏠 No manām mājām" button in the route wizard), kite sizes and weight — with quiver+weight set, routes recommend which kites to take (size ≈ 2.2 × kg / kn) |
 | `/menu` (or `/start`) | Buttons: check all spots or a single one with one tap |
@@ -154,6 +155,10 @@ restart — friends keep their personal DM digests, but editing is locked down.
 | `default_cell` | `land` | Forecast grid cell for newly added spots: `sea` reads the wind over the water — set it if your spots are coastal (the example config does); `land` suits small lakes/lagoons |
 | `day_start_hour` / `day_end_hour` | `8` / `20` | Daylight window (spot-local time) |
 | `admin_user_ids` | `[]` | Who may change spots/subscriptions (see above) |
+| `webapp_port` | `0` | Port of the [Mini App](#mini-app-optional) server inside the bot; `0` = off |
+| `webapp_host` | `0.0.0.0` | Address it binds to (inside the container) |
+| `webapp_url` | `""` | Public `https://` address of the Mini App (the tunnel hostname) |
+| `webapp_short_name` | `""` | BotFather `/newapp` short name, for `t.me/<bot>/<name>` buttons in groups |
 
 `data/spots.yaml` — one entry per spot: `name`, `lat`, `lon`, `min_wind`,
 `max_wind` (in your `wind_unit`; legacy `min_knots`/`max_knots` fields are
@@ -250,6 +255,54 @@ Config stays in `./config.yaml`, mutable state (spots, subscriptions) in
 `./data/`. Without Docker, any process manager works (`systemd`, `launchd`,
 `tmux` for testing) — the bot is a single long-running process, no open ports
 needed (it uses Telegram long-polling).
+
+## Mini App (optional)
+
+A Telegram Mini App — a web page that opens inside Telegram — shows the same
+forecast as screens: every spot for a day with its rideable hours as a strip,
+and per spot an hour-by-hour chart (wind, gusts, the spot's minimum, the
+rideable window shaded, wind direction against the spot's sectors) with the
+rider's kite pick. Day tabs and a "Bez lietus" filter replace re-running
+commands. It is read-only; everything else stays in chat.
+
+It runs inside the bot process — no second service writes `data/` — and is
+published through a **Cloudflare Tunnel**, so nothing is opened on the router
+or the host: `cloudflared` dials out to Cloudflare, and the compose file maps
+no ports.
+
+Setup:
+
+1. **Cloudflare**: add a domain you own to Cloudflare (free plan). In Zero
+   Trust → Networks → Tunnels, create a tunnel (type *cloudflared*), copy its
+   token, then add a *public hostname* — e.g. `kite.example.com` — pointing to
+   service `HTTP` · `kitebot:8080`.
+2. **`.env`**: `TUNNEL_TOKEN=<that token>` and `COMPOSE_PROFILES=webapp`
+   (the profile starts the `cloudflared` service; without it nothing changes).
+3. **BotFather**: `/newapp` → pick the bot → title, description, photo → web
+   app URL `https://kite.example.com` → a short name such as `prognoze`. The
+   short name gives the link `t.me/<bot>/prognoze`, which is how a Mini App
+   opens from a group (Telegram allows web-app buttons in private chats only).
+4. **`config.yaml`**:
+
+   ```yaml
+   webapp_port: 8080
+   webapp_url: "https://kite.example.com"
+   webapp_short_name: "prognoze"
+   ```
+
+5. `docker compose up -d --build`, then `https://kite.example.com/healthz`
+   should answer `ok`.
+
+Then the daily digest carries a "📊 Atvērt prognozi" button, `/app` replies
+with one, and in private chats the menu button next to the message box opens
+the app.
+
+**Who can open it**: users in `admin_user_ids`, anyone whose private chat is
+subscribed, and members of subscribed groups (asked of Telegram and cached for
+an hour). Every API call carries Telegram's signed `initData`, checked against
+the bot token (HMAC-SHA256) and refused when older than 24 h, so the address
+alone gives nothing away. Forecasts are fetched at most once per 10 minutes
+however many people look.
 
 ## Development
 

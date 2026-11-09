@@ -6,3 +6,17 @@ services:
       - ./config.yaml:/app/config.yaml:ro
       - ./data:/app/data
     restart: unless-stopped
+    # No ports on purpose: the Mini App server (webapp_port in config.yaml)
+    # is reachable only on this compose network, by cloudflared below.
+
+  # Mini App tunnel (README "Mini App"). Starts only with the "webapp"
+  # profile — COMPOSE_PROFILES=webapp in .env — and needs TUNNEL_TOKEN there.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:-}
+    depends_on:
+      - kitebot
+    restart: unless-stopped
+    profiles: ["webapp"]

@@ -76,7 +76,8 @@ def main() -> None:
     post_time = _daily_time(settings)
     token = config.get_token()
 
-    app = Application.builder().token(token).post_init(handlers.post_init).build()
+    app = (Application.builder().token(token)
+           .post_init(handlers.post_init).post_shutdown(handlers.post_shutdown).build())
     if app.job_queue is None:
         raise SystemExit('JobQueue missing — install "python-telegram-bot[job-queue]"')
     handlers.register(app)

@@ -1,0 +1,116 @@
+/* KiteBot Mini App. Telegram injects its theme as --tg-theme-* variables;
+   the second value in each var() is the look outside Telegram. */
+:root {
+  --bg: var(--tg-theme-secondary-bg-color, #F3F5F1);
+  --card: var(--tg-theme-section-bg-color, var(--tg-theme-bg-color, #FBFBF8));
+  --text: var(--tg-theme-text-color, #10202E);
+  --hint: var(--tg-theme-hint-color, #5B6873);
+  --link: var(--tg-theme-link-color, #22709A);
+  --line: rgba(127, 140, 150, .22);
+  --none: rgba(127, 140, 150, .26);
+  --kite: #22709A;
+  --kite-shade: rgba(34, 112, 154, .14);
+  --on-kite: #FBFBF8;
+  --foil: #9CC9DE;
+  --foil-shade: rgba(156, 201, 222, .28);
+  --gust: #E8622C;
+  --warn: #B4471A;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-scheme="light"]) {
+    --bg: var(--tg-theme-secondary-bg-color, #0E1A24);
+    --card: var(--tg-theme-section-bg-color, var(--tg-theme-bg-color, #172733));
+    --text: var(--tg-theme-text-color, #E8EEF2);
+    --hint: var(--tg-theme-hint-color, #93A4B0);
+  }
+}
+:root[data-scheme="dark"] {
+  --kite: #3B8FBF;
+  --kite-shade: rgba(59, 143, 191, .2);
+  --on-kite: #0E1A24;
+  --foil: #7FB8D4;
+  --foil-shade: rgba(127, 184, 212, .22);
+  --warn: #F08A5D;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.35 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-text-size-adjust: 100%;
+}
+.top { display: flex; align-items: center; gap: 12px; padding: 12px 16px 0; max-width: 640px; margin: 0 auto; }
+.top h1 { font-size: 20px; margin: 0; }
+.back { color: var(--link); text-decoration: none; font-weight: 600; }
+main { padding: 10px 12px 24px; display: flex; flex-direction: column; gap: 10px; max-width: 640px; margin: 0 auto; }
+.msg { color: var(--hint); text-align: center; padding: 32px 8px; }
+.foot { color: var(--hint); font-size: 13px; text-align: center; margin: 4px 0 0; }
+
+.seg { display: flex; gap: 3px; background: var(--none); border-radius: 12px; padding: 3px; }
+.seg button {
+  flex: 1; border: 0; background: transparent; color: var(--text); font: inherit;
+  padding: 7px 4px; border-radius: 9px; cursor: pointer;
+}
+.seg button[aria-selected="true"] { background: var(--card); font-weight: 600; box-shadow: 0 1px 2px rgba(0, 0, 0, .15); }
+
+.bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--hint); font-size: 14px; }
+.toggle { display: flex; align-items: center; gap: 6px; color: var(--text); }
+.sw { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -1px; margin: 0 4px 0 10px; }
+.axis { display: flex; justify-content: space-between; color: var(--hint); font-size: 12px; padding: 0 14px; margin-bottom: -6px; }
+
+.card { display: block; background: var(--card); border-radius: 14px; padding: 10px 14px; color: inherit; text-decoration: none; }
+.row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.name { font-weight: 600; font-size: 17px; }
+.pill { border-radius: 999px; padding: 1px 10px; font-weight: 600; font-size: 14px; white-space: nowrap; }
+.pill.kite { background: var(--kite); color: var(--on-kite); }
+.pill.foil { background: var(--foil); color: #10202E; }
+.pill.none { background: var(--none); color: var(--hint); }
+.strip { display: flex; align-items: flex-end; gap: 2px; height: 12px; margin: 8px 0 6px; }
+.strip i { flex: 1; height: 12px; border-radius: 3px; background: var(--none); }
+.strip i.kite { background: var(--kite); }
+.strip i.foil { background: var(--foil); }
+/* hours already gone shrink rather than fade, so a faded blue never passes for foil */
+.strip i.past { height: 5px; }
+.sub { color: var(--hint); font-size: 14px; }
+
+/* spot screen: hourly chart */
+.chart { background: var(--card); border-radius: 14px; padding: 10px 12px 8px; }
+.legend { display: flex; justify-content: space-between; color: var(--hint); font-size: 13px; }
+.gl { display: inline-block; width: 16px; height: 3px; background: var(--gust); vertical-align: 3px; margin-right: 4px; }
+.ml { display: inline-block; width: 18px; border-top: 2px dashed var(--hint); vertical-align: 3px; margin-right: 4px; }
+.notes { position: relative; height: 20px; margin: 6px 0 0 30px; font-size: 13px; font-weight: 600; }
+.notes span { position: absolute; top: 0; white-space: nowrap; }
+.notes .win { color: var(--kite); transform: translateX(-50%); }
+.notes .win.foil { color: var(--hint); }
+.notes .turn { color: var(--warn); padding-left: 4px; }
+.plot-wrap { display: flex; gap: 6px; margin-top: 10px; }
+.yaxis { position: relative; width: 24px; height: 170px; flex: none; color: var(--hint); font-size: 12px; }
+.yaxis span { position: absolute; right: 0; transform: translateY(50%); line-height: 1; }
+.plot { position: relative; flex: 1; height: 170px; display: flex; align-items: flex-end; border-bottom: 1px solid var(--hint); }
+.plot .g { position: absolute; left: 0; right: 0; border-top: 1px solid var(--line); }
+.plot .m { position: absolute; left: 0; right: 0; border-top: 2px dashed var(--hint); z-index: 3; }
+.plot .w { position: absolute; top: 0; bottom: 0; border-radius: 6px; background: var(--kite-shade); }
+.plot .w.foil { background: var(--foil-shade); }
+.plot .t { position: absolute; top: 0; bottom: 0; border-left: 2px dashed var(--warn); z-index: 3; }
+.col { flex: 1; position: relative; height: 100%; z-index: 2; }
+.col i { position: absolute; left: 2px; right: 2px; bottom: 0; border-radius: 4px 4px 0 0; background: var(--none); }
+.col.kite i { background: var(--kite); }
+.col.foil i { background: var(--foil); }
+.plot .now { position: absolute; top: -6px; bottom: 0; border-left: 2px solid var(--text); opacity: .4; z-index: 3; }
+.col u { position: absolute; left: 1px; right: 1px; height: 3px; border-radius: 2px; background: var(--gust); }
+.xaxis, .dirs, .rain { display: flex; margin-left: 30px; color: var(--hint); font-size: 12px; }
+.xaxis span, .dirs span, .rain span { flex: 1; text-align: center; }
+.xaxis { margin-top: 3px; }
+.dirs span { font-weight: 700; font-size: 15px; }
+.dirs b { display: inline-block; }
+.dirs .ok { color: var(--kite); }
+.dirs .no { color: var(--warn); }
+.rain span { font-size: 11px; }
+
+.tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.tile { background: var(--card); border-radius: 12px; padding: 8px 4px; display: flex; flex-direction: column; align-items: center; gap: 2px; text-align: center; }
+.tile b { font-size: 20px; line-height: 24px; }
+.tile span { color: var(--hint); font-size: 13px; }
+.tile svg { width: 24px; height: 24px; }

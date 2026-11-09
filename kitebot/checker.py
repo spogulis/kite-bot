@@ -60,6 +60,6 @@ async def gather_results(spots: list, settings: Settings, robust: bool = False,
                 band=effective_band(settings),
                 foil_min=effective_foil_min(settings),
             )
-            return SpotResult(spot=spot, windows=windows)
+            return SpotResult(spot=spot, windows=windows, points=points)
 
         return list(await asyncio.gather(*(check(i, s) for i, s in enumerate(spots))))

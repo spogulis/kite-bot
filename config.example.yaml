@@ -27,6 +27,12 @@ day_end_hour: 20
 # woo_token: ""
 # surfr_token: ""            # same idea for Surfr (thesurfr.app) riders
 
+# Telegram Mini App (optional, README "Mini App"). webapp_port starts a small
+# web server inside the bot; nothing listens while it is 0 or unset.
+# webapp_port: 8080
+# webapp_url: "https://kite.example.com"   # the Cloudflare Tunnel hostname
+# webapp_short_name: "prognoze"            # BotFather /newapp name, for buttons in groups
+
 # Telegram user ids that may edit spots and (un)subscribe chats, wherever they
 # write. Empty list = group admins may manage in groups, anyone in a private
 # chat. Find your id with /id. Example: [12345678]

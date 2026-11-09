@@ -184,6 +184,33 @@ class Settings:
     surfr_token: str = ""  # empty = use the built-in public leaderboard token
     default_model: str = "best_match"  # weather model unless a spot overrides it
     default_cell: str = "land"  # forecast grid cell for newly added spots: land|sea|nearest
+    # Telegram Mini App (see README "Mini App"). Port 0 keeps the web server off.
+    webapp_port: int = 0
+    webapp_host: str = "0.0.0.0"
+    webapp_url: str = ""         # public https:// address, e.g. the Cloudflare Tunnel hostname
+    webapp_short_name: str = ""  # BotFather /newapp short name, for t.me/<bot>/<name> links
+
+
+_SHORT_NAME_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_")
+
+
+def _parse_webapp(raw: dict, s: "Settings") -> None:
+    try:
+        s.webapp_port = int(raw.get("webapp_port") or 0)
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(f"config.yaml webapp_port must be a number, got {raw.get('webapp_port')!r}") from exc
+    if not 0 <= s.webapp_port <= 65535:
+        raise SystemExit(f"config.yaml webapp_port out of range: {s.webapp_port}")
+    s.webapp_host = str(raw.get("webapp_host") or s.webapp_host).strip()
+    s.webapp_url = str(raw.get("webapp_url") or "").strip().rstrip("/")
+    if s.webapp_url and not s.webapp_url.startswith("https://"):
+        raise SystemExit("config.yaml webapp_url must start with https:// — Telegram opens "
+                         f"Mini Apps over HTTPS only, got {s.webapp_url!r}")
+    s.webapp_short_name = str(raw.get("webapp_short_name") or "").strip()
+    name = s.webapp_short_name
+    if name and not (3 <= len(name) <= 30 and set(name) <= _SHORT_NAME_CHARS):
+        raise SystemExit("config.yaml webapp_short_name must be the 3–30 letter/digit/_ "
+                         f"name given to BotFather /newapp, got {name!r}")
 
 
 def load_settings() -> Settings:
@@ -219,6 +246,7 @@ def load_settings() -> Settings:
     if s.default_cell not in ("land", "sea", "nearest"):
         raise SystemExit(f"config.yaml default_cell must be land, sea or nearest, "
                          f"got {s.default_cell!r}")
+    _parse_webapp(raw, s)
     return s
 
 
