@@ -147,6 +147,7 @@ restart — friends keep their personal DM digests, but editing is locked down.
 | `daily_post_time` | `"07:00"` | When the digest is posted |
 | `daily_greeting` | `"Labrīt, kaiteri!"` | First line of the daily post; empty string disables |
 | `forecast_days` | `3` | Days ahead to scan (1–7) |
+| `digest_map` | `false` | Send the morning digest as a [map picture](#map-digest) with the text in its caption |
 | `post_when_no_wind` | `false` | `false` = when nothing is rideable today, send only yesterday's rider recap — or nothing if nobody rode; `true` = post the full digest anyway |
 | `min_window_hours` | `2` | Minimum consecutive rideable hours |
 | `foil_min_wind` | per unit (4.5 m/s / 9 kn) | Lowest wind a foil kite (Flysurfer and the like) rides. Hours from here up to a spot's `min_wind` (and regular hours too scattered for a window) form extra windows marked "tikai ar matraci"; they count as wind for the digest and the forecast log, but not for `/route`. `0` disables |
@@ -269,10 +270,37 @@ planning features on three tabs:
   drive limit, dry-only and "from home" as controls, the route recomputed on
   every change, and "📤 Nosūtīt grupai" posting it to the subscribed groups
   you are in (once a minute at most).
+- **Braucēji**: the record table, a progress chart of every rider's best jump
+  per session (riders can be switched on and off to compare), and the latest
+  logged sessions. The chart reads `data/sessions.json`, which the morning job
+  starts filling from the first run of this version — `riders.json` only ever
+  kept each rider's best jump, so there is no older history to draw.
 - **Profils**: kites, weight and home location (from the phone, Telegram 8.0+)
   as a form, plus the wind range each of your kites gets picked for.
+- **Spot editor** (from a spot's "🧭 Virzieni kartē"): the spot on an
+  OpenStreetMap map with its allowed wind sectors drawn as a compass on top.
+  Users in `admin_user_ids` tap a direction to switch it, drag the orange
+  handles to narrow a sector to any 5° step, set the wind range and forecast
+  cell, move or delete the spot, and add new spots by tapping the map
+  ("➕ Jauns spots" on the overview). Everyone else sees it read-only. The map
+  library (Leaflet) loads from unpkg with a pinned integrity hash; the tiles
+  come from openstreetmap.org.
 
 The daily digest, the rider recap and records stay chat messages.
+
+### Map digest
+
+With `digest_map: true` the 07:00 post becomes a picture: the spots on a map
+of the coast, each labelled with today's window (blue for a kite, light blue
+for foil-only, grey for no wind). The usual text rides along in the photo's
+caption as a collapsed quote, so nothing is lost; when it is longer than a
+caption allows, it follows as a normal message. Windless mornings stay text.
+`/testdigest` sends the map too, so you can check it any time.
+
+The coastline is bundled (`kitebot/assets/baltic_land.json`: Natural Earth
+1:10m land, public domain, cut to the eastern Baltic). Spots outside it get no
+map and the digest goes out as text, exactly as before. Docker images include
+the DejaVu font for the labels.
 
 It runs inside the bot process — no second service writes `data/` — and is
 published through a **Cloudflare Tunnel**, so nothing is opened on the router

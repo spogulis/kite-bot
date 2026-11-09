@@ -29,8 +29,8 @@ from .analysis import (
 from .checker import gather_results
 from .config import Spot, Subscription
 from .messages import (
-    DIRECTION_LABELS_LV, SpotResult, any_windows, build_digest, describe_spot,
-    split_message, today_windows, unit_label,
+    DIRECTION_LABELS_LV, WEEKDAYS_LV, SpotResult, any_windows, build_digest, describe_spot,
+    split_message, to_plain, today_windows, unit_label,
 )
 
 log = logging.getLogger(__name__)
@@ -1500,6 +1500,10 @@ async def build_woo_section(settings, update_records: bool) -> tuple:
     lines, updated, changed = woo.summarize(riders, stats, spot_names)
     if changed and update_records:
         config.save_riders(updated)
+    if update_records:
+        entries = woo.session_entries(riders, stats, spot_names)
+        if entries:  # the Mini App's progress chart reads this log
+            config.record_sessions(date_str, entries)
     if not lines:
         return None, f"neviens no {len(riders)} braucējiem vakar nebrauca, sadaļu nerādu{failure_note}"
     missed = woo.missed_spots(riders, stats, config.load_forecast_log().get(date_str, {}))
@@ -1860,6 +1864,13 @@ async def cmd_testdigest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         outro += f"\nŠī čata spotu filtrs: {', '.join(sub.spots)}."
     outro += f"\nWOO: {recap_status}."
     text = intro + "\n\n" + body + "\n\n" + outro
+    if settings.digest_map and any_windows(results):
+        photo = morning_map(results, settings)
+        caption = "ℹ️ Tests — rīta karte" if photo else None
+        if photo:
+            await msg.reply_photo(photo=photo, caption=caption)
+        else:
+            text += "\nKarte: neizdevās uzzīmēt (spoti ārpus kartes vai kļūda — sk. žurnālu)."
     for part in split_message(text):
         await msg.reply_html(part)
 
@@ -1880,22 +1891,61 @@ async def daily_job(context: ContextTypes.DEFAULT_TYPE) -> None:
                            {r.spot.name: bool(r.windows) for r in results if not r.error})
     recap, _ = await build_woo_section(settings, update_records=True)
     cache: dict = {}
+    maps: dict = {}
     for sub in subs:
         key = tuple(sorted(n.lower() for n in sub.spots))
+        filtered = _filter_results(results, sub)
         if key not in cache:
-            text = _morning_text(_filter_results(results, sub), settings, recap)
+            text = _morning_text(filtered, settings, recap)
             cache[key] = split_message(text) if text else []
+            # the picture only when there is wind to show; a recap-only morning stays text
+            wants_map = settings.digest_map and text and any_windows(filtered)
+            maps[key] = morning_map(filtered, settings) if wants_map else None
         if not cache[key]:
             log.info("daily digest: nothing rideable and nobody rode, staying quiet in chat %s",
                      sub.chat_id)
             continue
         markup = webapp_markup(settings, sub.chat_id, getattr(context.bot, "username", None))
-        await _send_digest(context, sub, cache[key], markup)
+        await _send_digest(context, sub, cache[key], markup, photo=maps[key])
+
+
+CAPTION_LIMIT = 1000  # Telegram allows 1024 visible characters in a photo caption
+
+
+def morning_map(results: list, settings) -> "bytes | None":
+    """The digest map PNG, or None when it can't be drawn — the text then
+    goes out on its own, so a rendering problem never costs the morning post."""
+    day = _today(settings)
+    try:
+        from . import digestmap
+        return digestmap.render(results, f"{WEEKDAYS_LV[day.weekday()]} {day:%d.%m} · šodien")
+    except Exception:  # noqa: BLE001 — any failure falls back to plain text
+        log.exception("digest map failed, sending text only")
+        return None
+
+
+def photo_caption(parts: list) -> "str | None":
+    """The whole morning text folded into an expandable quote under the map,
+    or None when it is too long for a caption."""
+    caption = "<blockquote expandable>" + "\n\n".join(parts) + "</blockquote>"
+    return caption if len(to_plain(caption)) <= CAPTION_LIMIT else None
 
 
 async def _send_digest(context: ContextTypes.DEFAULT_TYPE, sub: Subscription,
-                       parts: list, markup: "InlineKeyboardMarkup | None" = None) -> None:
+                       parts: list, markup: "InlineKeyboardMarkup | None" = None,
+                       photo: "bytes | None" = None) -> None:
+    caption = photo_caption(parts) if photo else None
+
     async def send_to(chat_id: int) -> None:
+        if photo:
+            await context.bot.send_photo(
+                chat_id=chat_id, photo=photo, caption=caption,
+                parse_mode=ParseMode.HTML if caption else None,
+                message_thread_id=sub.thread_id,
+                reply_markup=markup if caption else None,
+            )
+            if caption:  # the text rode along in the caption
+                return
         for i, part in enumerate(parts):
             await context.bot.send_message(
                 chat_id=chat_id, text=part, parse_mode=ParseMode.HTML,

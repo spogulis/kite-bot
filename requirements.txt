@@ -1,6 +1,7 @@
 python-telegram-bot[job-queue]~=22.0
 httpx
 aiohttp~=3.11
+pillow~=11.0
 PyYAML~=6.0
 python-dotenv~=1.0
 tzdata

@@ -30,7 +30,7 @@ from telegram.error import TelegramError
 
 from . import checker, config, routes
 from .analysis import dry_windows, in_sectors
-from .config import UNIT_LABELS, effective_band, effective_foil_min, to_knots
+from .config import UNIT_LABELS, Spot, effective_band, effective_foil_min, to_knots
 from .messages import WEEKDAYS_LV
 
 log = logging.getLogger(__name__)
@@ -53,9 +53,13 @@ MODEL_LABELS = {
 # What a chat member's status must be to see the app (ChatMemberStatus values).
 _MEMBER_STATUSES = {"creator", "administrator", "member"}
 
-CSP = ("default-src 'self'; script-src 'self' https://telegram.org; "
-       "style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; "
+# Leaflet (spot editor map) comes from unpkg with SRI hashes in app.js; tiles
+# from OpenStreetMap, whose usage policy wants a Referer — hence the policy below.
+CSP = ("default-src 'self'; script-src 'self' https://telegram.org https://unpkg.com; "
+       "style-src 'self' 'unsafe-inline' https://unpkg.com; "
+       "img-src 'self' data: https://tile.openstreetmap.org; connect-src 'self'; "
        "object-src 'none'; base-uri 'none'; form-action 'none'")
+REFERRER_POLICY = "strict-origin-when-cross-origin"  # the origin only, never paths
 
 DENIED_LV = ("Prognoze pieejama tikai to čatu dalībniekiem, kuros ieslēgta "
              "ikdienas ziņa (/subscribe).")
@@ -434,6 +438,107 @@ def parse_profile(body) -> "dict | None":
     return out or None
 
 
+# --- spot editor -----------------------------------------------------------------
+
+MAX_SPOT_NAME = 25   # same cap as /addspot: spot names travel in callback data
+MAX_SECTORS = 16
+CELLS = ("land", "sea", "nearest")
+
+
+def spot_json(spot) -> dict:
+    return {"name": spot.name, "lat": spot.lat, "lon": spot.lon,
+            "min_wind": _r(spot.min_wind), "max_wind": _r(spot.max_wind),
+            "sectors": [[_r(lo), _r(hi)] for lo, hi in spot.good_directions],
+            "cell": spot.cell_selection}
+
+
+def parse_spot(body) -> "dict | None":
+    """Validated spot fields from the editor, or None."""
+    if not isinstance(body, dict):
+        return None
+    try:
+        name = " ".join(str(body["name"]).split())
+        lat, lon = float(body["lat"]), float(body["lon"])
+        lo, hi = float(body["min_wind"]), float(body["max_wind"])
+        sectors = [[round(float(a) % 360, 1), round(float(b) % 360, 1)]
+                   for a, b in body.get("sectors") or []]
+    except (KeyError, TypeError, ValueError):
+        return None
+    cell = str(body.get("cell", "land"))
+    original = body.get("original")
+    if (not name or len(name) > MAX_SPOT_NAME or ":" in name
+            or not (-90 <= lat <= 90 and -180 <= lon <= 180)
+            or not (0 < lo < hi <= 200) or len(sectors) > MAX_SECTORS
+            or any(a == b for a, b in sectors) or cell not in CELLS
+            or (original is not None and not isinstance(original, str))):
+        return None
+    return {"name": name, "lat": round(lat, 5), "lon": round(lon, 5), "min_wind": lo,
+            "max_wind": hi, "sectors": sectors, "cell": cell, "original": original}
+
+
+def save_spot(fields: dict) -> "str | None":
+    """Add or update a spot; on rename, chats' /myspots filters follow along.
+    Returns an error message, or None when saved."""
+    spots = config.load_spots()
+    original = fields["original"]
+    index = next((i for i, s in enumerate(spots) if s.name == original), None)
+    if original is not None and index is None:
+        return "Šāda spota vairs nav."
+    clash = any(s.name.lower() == fields["name"].lower() for i, s in enumerate(spots) if i != index)
+    if clash:
+        return "Spots ar šādu nosaukumu jau ir."
+    old = spots[index] if index is not None else None
+    spot = Spot(name=fields["name"], lat=fields["lat"], lon=fields["lon"],
+                min_wind=fields["min_wind"], max_wind=fields["max_wind"],
+                good_directions=fields["sectors"], cell_selection=fields["cell"],
+                model=old.model if old else "")
+    if index is None:
+        spots.append(spot)
+    else:
+        spots[index] = spot
+    config.save_spots(spots)
+    if old is not None and old.name != spot.name:
+        for sub in config.load_subscriptions():
+            if old.name in sub.spots:
+                renamed = tuple(spot.name if n == old.name else n for n in sub.spots)
+                config.set_subscription_spots(sub.chat_id, sub.thread_id, renamed)
+    return None
+
+
+# --- riders ----------------------------------------------------------------------
+
+def riders_payload(riders: list, sessions: dict) -> dict:
+    """Records ranked, each tracked rider's logged best jumps as a series, and
+    the latest logged day's sessions."""
+    days = sorted(sessions)
+    tracked = [r["name"] for r in sorted(riders, key=lambda r: -r["record_height_m"])]
+    points: dict = {name: [] for name in tracked}
+    for day in days:
+        for entry in sessions[day]:
+            if entry.get("name") in points and entry.get("height_m"):
+                points[entry["name"]].append([day, entry["height_m"]])
+    latest_day = days[-1] if days else None
+    latest = [e for e in sessions.get(latest_day, []) if e.get("name") in points]
+    latest_by_name = {e["name"]: e for e in latest}
+    rows = []
+    for rider in sorted(riders, key=lambda r: -r["record_height_m"]):
+        last = latest_by_name.get(rider["name"])
+        rows.append({
+            "name": rider["name"], "record": _r(rider["record_height_m"]),
+            "sessions": len(points[rider["name"]]),
+            # the record fell on the latest logged day
+            "new_record": bool(last and last.get("height_m")
+                               and last["height_m"] >= rider["record_height_m"] - 0.05),
+        })
+    return {
+        "riders": rows,
+        "series": [{"name": name, "points": points[name]} for name in tracked if points[name]],
+        "latest": {"date": latest_day,
+                   "entries": sorted(latest, key=lambda e: -(e.get("height_m") or 0))},
+        "since": days[0] if days else None,
+    }
+
+
 # --- HTTP ------------------------------------------------------------------------
 
 TOKEN = web.AppKey("token", str)
@@ -484,8 +589,10 @@ async def handle_forecast(request: web.Request) -> web.Response:
         return _error(400, "Nederīga diena.")
     results, fetched_at = await _results(request, settings)
     now = datetime.now(ZoneInfo(settings.timezone))
-    return _json(forecast_payload(results, settings, day, now,
-                                  config.get_profile(user["id"]), fetched_at))
+    payload = forecast_payload(results, settings, day, now, config.get_profile(user["id"]),
+                               fetched_at)
+    payload["is_admin"] = _is_admin(user, settings)
+    return _json(payload)
 
 
 async def handle_route(request: web.Request) -> web.Response:
@@ -554,6 +661,73 @@ async def handle_route_share(request: web.Request) -> web.Response:
     return _json({"sent": sent})
 
 
+def _is_admin(user: dict, settings) -> bool:
+    return user["id"] in settings.admin_user_ids
+
+
+async def handle_spots(request: web.Request) -> web.Response:
+    auth = await _authorize(request)
+    if isinstance(auth, web.Response):
+        return auth
+    settings, user = auth
+    return _json({
+        "is_admin": _is_admin(user, settings),
+        "unit": UNIT_LABELS.get(settings.wind_unit, settings.wind_unit),
+        "spots": [spot_json(s) for s in request.app[SPOTS_LOADER](settings)],
+    })
+
+
+async def _admin_body(request: web.Request) -> "tuple | web.Response":
+    auth = await _authorize(request)
+    if isinstance(auth, web.Response):
+        return auth
+    settings, user = auth
+    if not _is_admin(user, settings):
+        return _error(403, "Spotus var mainīt tikai config.yaml norādītie admini.")
+    try:
+        return settings, await request.json()
+    except ValueError:
+        return settings, None
+
+
+async def handle_spot_save(request: web.Request) -> web.Response:
+    got = await _admin_body(request)
+    if isinstance(got, web.Response):
+        return got
+    settings, body = got
+    fields = parse_spot(body)
+    if fields is None:
+        return _error(400, f"Nederīgi spota dati (nosaukums līdz {MAX_SPOT_NAME} zīmēm, "
+                           "min < max vējš).")
+    problem = save_spot(fields)
+    if problem:
+        return _error(409, problem)
+    log.info("Mini App: spot %r saved", fields["name"])
+    return _json({"spots": [spot_json(s) for s in config.load_spots(settings)]})
+
+
+async def handle_spot_delete(request: web.Request) -> web.Response:
+    got = await _admin_body(request)
+    if isinstance(got, web.Response):
+        return got
+    settings, body = got
+    name = body.get("name") if isinstance(body, dict) else None
+    spots = config.load_spots(settings)
+    remaining = [s for s in spots if s.name != name]
+    if not isinstance(name, str) or len(remaining) == len(spots):
+        return _error(404, "Šāda spota nav.")
+    config.save_spots(remaining)
+    log.info("Mini App: spot %r deleted", name)
+    return _json({"spots": [spot_json(s) for s in remaining]})
+
+
+async def handle_riders(request: web.Request) -> web.Response:
+    auth = await _authorize(request)
+    if isinstance(auth, web.Response):
+        return auth
+    return _json(riders_payload(config.load_riders(), config.load_sessions()))
+
+
 async def handle_profile_get(request: web.Request) -> web.Response:
     auth = await _authorize(request)
     if isinstance(auth, web.Response):
@@ -587,7 +761,7 @@ async def handle_health(request: web.Request) -> web.Response:
 
 async def _security_headers(request: web.Request, response: web.StreamResponse) -> None:
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
-    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Referrer-Policy", REFERRER_POLICY)
     response.headers.setdefault("Content-Security-Policy", CSP)
 
 
@@ -607,6 +781,10 @@ def build_app(token: str, access, *, cache: "ForecastCache | None" = None,
     app.router.add_get("/api/forecast", handle_forecast)
     app.router.add_get("/api/route", handle_route)
     app.router.add_post("/api/route/share", handle_route_share)
+    app.router.add_get("/api/riders", handle_riders)
+    app.router.add_get("/api/spots", handle_spots)
+    app.router.add_post("/api/spots/save", handle_spot_save)
+    app.router.add_post("/api/spots/delete", handle_spot_delete)
     app.router.add_get("/api/profile", handle_profile_get)
     app.router.add_post("/api/profile", handle_profile_post)
     app.router.add_get("/healthz", handle_health)

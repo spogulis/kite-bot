@@ -11,6 +11,8 @@
     day: 0, dry: false, cache: {}, ticket: 0,
     route: { day: 0, prefer: "any", km: 100, dry: false, home: true },
     profile: null, draft: null,
+    riders: null, ridersTab: "records", hidden: new Set(),
+    edit: null, moving: false, map: null,
   };
   const tabs = document.querySelectorAll(".tabs a");
   const DIRS = ["Z", "ZA", "A", "DA", "D", "DR", "R", "ZR"];
@@ -72,6 +74,8 @@
     else if (name === "rday") state.route.day = Number(value);
     else if (name === "prefer") state.route.prefer = value;
     else if (name === "km") state.route.km = Number(value);
+    else if (name === "rtab") state.ridersTab = value;
+    else if (name === "cell" && state.edit) { state.edit.cell = value; state.edit.dirty = true; }
   }
 
   // windows left after the "Bez lietus" filter, as a set of indexes
@@ -133,6 +137,7 @@
       + '<span><i class="sw" style="background:var(--kite)"></i>kaits<i class="sw" style="background:var(--foil)"></i>matracis</span></div>'
       + `<div class="axis"><span>${pad(data.day_start)}</span><span>${pad(mid)}</span><span>${pad(data.day_end)}</span></div>`
       + (cards.length ? cards.join("") : '<p class="msg">Vēl nav neviena spota.</p>')
+      + (data.is_admin ? '<a class="btn ghost" href="#/edit">➕ Jauns spots</a>' : "")
       + `<p class="foot">Atjaunots ${esc(data.updated)} · Open-Meteo</p>`;
   }
 
@@ -258,6 +263,7 @@
       + `<div class="plot-wrap"><div class="yaxis">${yLabels}</div><div class="plot">${grid}${shades}${minLine}${turns}${cols}</div></div>`
       + `<div class="xaxis">${xaxis}</div><div class="dirs">${dirs}</div>${rain}</div>`
       + tiles(s, bestWindow(s, shown), data)
+      + `<a class="btn ghost" href="#/edit/${encodeURIComponent(s.name)}">🧭 Virzieni kartē</a>`
       + foot;
   }
 
@@ -416,6 +422,364 @@
     profileView();
   }
 
+  // --- riders --------------------------------------------------------------------
+
+  const SERIES = [
+    ["var(--kite)", ""], ["var(--gust)", ""], ["var(--text)", "6 4"],
+    ["var(--foil)", ""], ["var(--warn)", "2 3"], ["#5B8C3A", "8 3"],
+  ];
+  const shortDate = (iso) => `${iso.slice(8, 10)}.${iso.slice(5, 7)}`;
+  const dayNumber = (iso) => Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10)) / 864e5;
+
+  function progressChart(series) {
+    const W = 360; const H = 230; const L = 34; const R = 276; const T = 12; const B = 196;
+    const all = series.flatMap((s) => s.points);
+    const days = all.map(([d]) => dayNumber(d));
+    const first = Math.min(...days); const last = Math.max(...days);
+    const heights = all.map(([, h]) => h);
+    const { top, step } = scale(Math.max(...heights) + 0.5);
+    const floor = Math.max(0, Math.floor((Math.min(...heights) - 0.5) / step) * step);
+    const x = (iso) => (last === first ? (L + R) / 2 : L + ((dayNumber(iso) - first) / (last - first)) * (R - L));
+    const y = (h) => B - ((h - floor) / (top - floor)) * (B - T);
+    let svg = "";
+    for (let v = floor; v <= top + 1e-9; v += step) {
+      svg += `<line x1="${L}" x2="${R}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" style="stroke:var(--line)"/>`
+        + `<text x="${L - 6}" y="${(y(v) + 4).toFixed(1)}" text-anchor="end" font-size="12" style="fill:var(--hint)">${hoursLv(v)}</text>`;
+    }
+    const ticks = [...new Set(all.map(([d]) => d))].sort();
+    const every = Math.max(1, Math.ceil(ticks.length / 4));
+    ticks.filter((_, i) => i % every === 0).forEach((d) => {
+      svg += `<text x="${x(d).toFixed(1)}" y="${H - 14}" text-anchor="middle" font-size="12" style="fill:var(--hint)">${shortDate(d)}</text>`;
+    });
+    const labels = [];
+    series.forEach((s) => {
+      const [color, dash] = SERIES[s.index % SERIES.length];
+      const pts = s.points.map(([d, h]) => `${x(d).toFixed(1)},${y(h).toFixed(1)}`).join(" ");
+      svg += `<polyline points="${pts}" fill="none" stroke-width="3" stroke-linejoin="round"${dash ? ` stroke-dasharray="${dash}"` : ""} style="stroke:${color}"/>`;
+      const best = s.points.reduce((a, p) => (p[1] > a[1] ? p : a));
+      s.points.forEach(([d, h]) => {
+        const ring = d === best[0] && h === best[1];
+        svg += `<circle cx="${x(d).toFixed(1)}" cy="${y(h).toFixed(1)}" r="${ring ? 6 : 3}" style="${ring ? `fill:var(--card);stroke:${color};stroke-width:3` : `fill:${color}`}"/>`;
+      });
+      const [ld, lh] = s.points[s.points.length - 1];
+      labels.push({ y: y(lh), x: x(ld), name: s.name, color });
+    });
+    labels.sort((a, b) => a.y - b.y);  // push apart so names never overlap
+    for (let i = 1; i < labels.length; i += 1) labels[i].y = Math.max(labels[i].y, labels[i - 1].y + 14);
+    labels.forEach((l) => {
+      svg += `<text x="${(Math.max(l.x, R) + 8).toFixed(1)}" y="${(l.y + 4).toFixed(1)}" font-size="13" font-weight="600" style="fill:${l.color}">${esc(l.name)}</text>`;
+    });
+    return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Labākais lēciens katrā sesijā">${svg}</svg>`;
+  }
+
+  function ridersBody(d) {
+    if (!d.riders.length) return '<p class="msg">Vēl nav neviena braucēja — admins pievieno ar /woorider vai /surfrider.</p>';
+    if (state.ridersTab === "records") {
+      const best = Math.max(...d.riders.map((r) => r.record), 0.1);
+      return `<div class="card">${d.riders.map((r) => (
+        `<div class="rd"><div class="row"><span class="who"><span class="avt">${esc(r.name.charAt(0).toUpperCase())}</span>`
+        + `<b>${esc(r.name)}</b>${r.new_record ? '<span class="new">🎉 jauns</span>' : ""}</span><b>${dec(r.record)} m</b></div>`
+        + `<div class="hb"><i style="width:${pct((r.record / best) * 100)}"></i></div></div>`)).join("")}</div>`;
+    }
+    if (state.ridersTab === "progress") {
+      if (!d.series.length) {
+        return '<p class="msg">Grafiks sāks krāties ar nākamo rīta ziņu — bots katru rītu pieraksta vakardienas sesijas.</p>';
+      }
+      const indexed = d.series.map((s, index) => ({ ...s, index }));
+      const chips = indexed.map((s) => {
+        const [color] = SERIES[s.index % SERIES.length];
+        return `<button class="rchip${state.hidden.has(s.name) ? " off" : ""}" data-act="rider-toggle" data-name="${esc(s.name)}"><i style="background:${color}"></i>${esc(s.name)}</button>`;
+      }).join("");
+      const shown = indexed.filter((s) => !state.hidden.has(s.name));
+      return `<div class="rchips">${chips}</div>`
+        + `<div class="card progress"><h2>Labākais lēciens sesijā, m</h2>${shown.length ? progressChart(shown) : '<p class="note">Ieslēdz kādu braucēju.</p>'}`
+        + `<p class="note">Aplis — labākais žurnālā · žurnāls kopš ${shortDate(d.since)}</p></div>`;
+    }
+    if (!d.latest.date) return '<p class="msg">Vēl nav pierakstīta neviena sesija.</p>';
+    const rows = d.latest.entries.map((e) => {
+      const parts = [
+        e.height_m && `⬆️ ${dec(e.height_m)} m`, e.jump_distance_m && `↔️ ${dec(e.jump_distance_m)} m`,
+        e.distance_km && `🛣️ ${dec(e.distance_km)} km`, e.kite && `🪁 ${esc(e.kite)}`, e.spot && `📍 ${esc(e.spot)}`,
+      ].filter(Boolean).join(" · ");
+      return `<div class="rd"><b>${esc(e.name)}</b><div class="sub">${parts}</div></div>`;
+    }).join("");
+    return `<div class="card"><h2>Sesijas ${shortDate(d.latest.date)}</h2>${rows || '<p class="note">Neviens nebrauca.</p>'}</div>`;
+  }
+
+  async function renderRiders(ticket) {
+    title.textContent = "Braucēji";
+    if (!state.riders) {
+      const d = await api("api/riders");
+      if (ticket !== state.ticket) return;
+      state.riders = d;
+    }
+    view.innerHTML = seg("rtab", [["records", "Rekordi"], ["progress", "Progress"], ["latest", "Pēdējās"]], state.ridersTab)
+      + ridersBody(state.riders);
+  }
+
+  // --- spot editor (map + compass) -------------------------------------------------
+
+  const LEAFLET_CSS = ["https://unpkg.com/leaflet@1.9.4/dist/leaflet.css",
+    "sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="];
+  const LEAFLET_JS = ["https://unpkg.com/leaflet@1.9.4/dist/leaflet.js",
+    "sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="];
+  const OCTANTS = [[337.5, 22.5], [22.5, 67.5], [67.5, 112.5], [112.5, 157.5],
+    [157.5, 202.5], [202.5, 247.5], [247.5, 292.5], [292.5, 337.5]];
+  const OCTANT_LV = ["Z", "ZA", "A", "DA", "D", "DR", "R", "ZR"];
+  let leafletLoading = null;
+
+  function loadLeaflet() {
+    if (window.L) return Promise.resolve();
+    if (!leafletLoading) {
+      leafletLoading = new Promise((resolve, reject) => {
+        const css = document.createElement("link");
+        css.rel = "stylesheet";
+        [css.href, css.integrity] = LEAFLET_CSS;
+        css.crossOrigin = "anonymous";
+        document.head.appendChild(css);
+        const js = document.createElement("script");
+        [js.src, js.integrity] = LEAFLET_JS;
+        js.crossOrigin = "anonymous";
+        js.onload = resolve;
+        js.onerror = () => { leafletLoading = null; reject(new Error("Karti neizdevās ielādēt.")); };
+        document.head.appendChild(js);
+      });
+    }
+    return leafletLoading;
+  }
+
+  // the same rules as the chat's direction buttons (analysis.py)
+  function inSectors(deg, sectors) {
+    if (!sectors.length) return true;
+    const d = ((deg % 360) + 360) % 360;
+    return sectors.some(([lo, hi]) => (lo <= hi ? lo <= d && d <= hi : d >= lo || d <= hi));
+  }
+  const coveredOctants = (sector) => [0, 1, 2, 3, 4, 5, 6, 7].filter((i) => inSectors(i * 45, [sector]));
+  function sectorsFromToggles(toggles, current) {
+    const out = [];
+    toggles.forEach((on, i) => {
+      if (!on) return;
+      const keep = current.find((s) => {
+        const cov = coveredOctants(s);
+        return cov.includes(i) && cov.every((j) => toggles[j]);
+      });
+      const sector = keep ? [...keep] : [...OCTANTS[i]];
+      if (!out.some((s) => s[0] === sector[0] && s[1] === sector[1])) out.push(sector);
+    });
+    return out;
+  }
+  function describeSectors(sectors) {
+    if (!sectors.length) return "jebkurš virziens";
+    return sectors.map(([lo, hi]) => {
+      const i = OCTANTS.findIndex(([a, b]) => a === lo && b === hi);
+      return i >= 0 ? OCTANT_LV[i] : `${Math.round(lo)}°–${Math.round(hi)}°`;
+    }).join(", ");
+  }
+
+  function editorCompass(sectors, editable) {
+    const rad = (d) => (d * Math.PI) / 180;
+    const at = (d, r) => [r * Math.sin(rad(d)), -r * Math.cos(rad(d))];
+    const f = (v) => v.toFixed(1);
+    const R = 96;
+    const wedge = (lo, hi, r) => {
+      const span = (((hi - lo) % 360) + 360) % 360 || 360;
+      if (span >= 360) return `<circle r="${r}"/>`;
+      const [x1, y1] = at(lo, r);
+      const [x2, y2] = at(hi, r);
+      return `<path d="M0 0 L${f(x1)} ${f(y1)} A${r} ${r} 0 ${span > 180 ? 1 : 0} 1 ${f(x2)} ${f(y2)} Z"/>`;
+    };
+    let svg = `<circle r="${R}" fill="#FBFBF8" fill-opacity=".35" stroke="#10202E" stroke-opacity=".4" stroke-width="2"/>`;
+    const filled = sectors.length ? sectors.map(([lo, hi]) => wedge(lo, hi, R)).join("") : `<circle r="${R}"/>`;
+    svg += `<g fill="#22709A" fill-opacity=".42" stroke="#22709A" stroke-width="2" pointer-events="none">${filled}</g>`;
+    if (editable) {
+      svg += `<g fill="transparent" style="cursor:pointer">${OCTANTS.map(([lo, hi], i) => wedge(lo, hi, R).replace(/^<(path|circle)/, `<$1 data-oct="${i}"`)).join("")}</g>`;
+      sectors.forEach(([lo, hi], i) => {
+        [lo, hi].forEach((deg, end) => {
+          const [x, y] = at(deg, R);
+          svg += `<circle data-s="${i}" data-e="${end}" cx="${f(x)}" cy="${f(y)}" r="11" fill="#FBFBF8" stroke="#B4471A" stroke-width="4" style="cursor:grab"/>`;
+        });
+      });
+    }
+    svg += '<circle r="8" fill="#10202E" stroke="#FBFBF8" stroke-width="3" pointer-events="none"/>';
+    svg += '<g font-size="18" font-weight="700" fill="#10202E" stroke="#FBFBF8" stroke-width="4" paint-order="stroke" text-anchor="middle" pointer-events="none" font-family="system-ui, sans-serif">'
+      + `<text y="${-R - 8}">Z</text><text x="${R + 14}" y="6">A</text><text y="${R + 22}">D</text><text x="${-R - 14}" y="6">R</text></g>`;
+    return `<svg width="220" height="220" viewBox="-110 -110 220 220">${svg}</svg>`;
+  }
+
+  function editorForm(admin, unit) {
+    const e = state.edit;
+    const valid = e.name.trim() && e.lat !== null && e.min_wind < e.max_wind;
+    if (!admin) {
+      return `<div class="card"><div class="row"><b>${esc(e.name)}</b><span class="sub">${num(e.min_wind)}–${num(e.max_wind)} ${esc(unit)}</span></div>`
+        + `<p class="note">Virzieni: ${esc(describeSectors(e.sectors))}. Mainīt var tikai admini.</p></div>`;
+    }
+    const step = (act, value) => `<div class="stepper"><button data-act="${act}-dec" aria-label="Mazāk">−</button><b>${hoursLv(value)}</b><button data-act="${act}-inc" aria-label="Vairāk">+</button></div>`;
+    return '<div class="card">'
+      + (e.lat === null ? '<p class="note">Pieskaries kartē, kur atrodas spots.</p>'
+        : '<p class="note">Pieskaries kompasam, lai ieslēgtu vai izslēgtu virzienu; velc oranžos punktus, lai sašaurinātu.</p>')
+      + `<div class="field"><input id="sp-name" maxlength="25" placeholder="Nosaukums" value="${esc(e.name)}" aria-label="Spota nosaukums"></div>`
+      + `<div class="field"><span>Vējš no, ${esc(unit)}</span>${step("min", e.min_wind)}</div>`
+      + `<div class="field"><span>līdz</span>${step("max", e.max_wind)}</div>`
+      + `<div class="field"><span>Virzieni</span><span class="sub">${esc(describeSectors(e.sectors))}</span></div>`
+      + '<p class="note">Prognozes šūna</p>'
+      + seg("cell", [["land", "Sauszeme"], ["sea", "Jūra"], ["nearest", "Tuvākā"]], e.cell)
+      + '<div class="btns">'
+      + (e.lat !== null ? `<button class="btn ghost small" data-act="spot-move">${state.moving ? "Pieskaries kartē…" : "📍 Pārvietot"}</button>` : "")
+      + `<button class="btn" data-act="spot-save"${valid && e.dirty ? "" : " disabled"}>Saglabāt</button></div>`
+      + (e.original ? '<div class="btns"><button class="btn warn" data-act="spot-delete">🗑 Dzēst spotu</button></div>' : "")
+      + "</div>";
+  }
+
+  function drawEditor(admin, unit) {
+    const e = state.edit;
+    const form = document.getElementById("spot-form");
+    if (form) form.innerHTML = editorForm(admin, unit);
+    const map = state.map;
+    if (!map) return;
+    if (e.lat === null) return;
+    if (!state.marker) {
+      state.marker = window.L.marker([e.lat, e.lon], {
+        icon: window.L.divIcon({ className: "compass-icon", html: "", iconSize: [220, 220] }),
+        keyboard: false,
+      }).addTo(map);
+      wireCompass(state.marker.getElement(), admin, unit);
+    }
+    state.marker.setLatLng([e.lat, e.lon]);
+    state.marker.getElement().innerHTML = editorCompass(e.sectors, admin);
+  }
+
+  function wireCompass(el, admin, unit) {
+    window.L.DomEvent.disableClickPropagation(el);
+    if (!admin) return;
+    let drag = null;
+    el.addEventListener("pointerdown", (ev) => {
+      const handle = ev.target.closest("[data-s]");
+      if (!handle) return;
+      ev.preventDefault();
+      drag = { s: Number(handle.dataset.s), e: Number(handle.dataset.e) };
+      state.map.dragging.disable();
+      el.setPointerCapture(ev.pointerId);
+    });
+    el.addEventListener("pointermove", (ev) => {
+      if (!drag) return;
+      const box = el.getBoundingClientRect();
+      const dx = ev.clientX - (box.left + box.width / 2);
+      const dy = ev.clientY - (box.top + box.height / 2);
+      const deg = (Math.round((((Math.atan2(dx, -dy) * 180) / Math.PI + 360) % 360) / 5) * 5) % 360;
+      const sector = state.edit.sectors[drag.s];
+      if (deg === sector[1 - drag.e] || deg === sector[drag.e]) return;
+      sector[drag.e] = deg;
+      state.edit.dirty = true;
+      el.innerHTML = editorCompass(state.edit.sectors, true);
+    });
+    const stop = () => {
+      if (!drag) return;
+      drag = null;
+      state.map.dragging.enable();
+      drawEditor(admin, unit);
+    };
+    el.addEventListener("pointerup", stop);
+    el.addEventListener("pointercancel", stop);
+    el.addEventListener("click", (ev) => {
+      const hit = ev.target.closest("[data-oct]");
+      if (!hit) return;
+      const e = state.edit;
+      const toggles = OCTANTS.map((_, i) => e.sectors.length > 0 && inSectors(i * 45, e.sectors));
+      const i = Number(hit.dataset.oct);
+      toggles[i] = !toggles[i];
+      e.sectors = sectorsFromToggles(toggles, e.sectors);
+      e.dirty = true;
+      drawEditor(admin, unit);
+    });
+  }
+
+  async function renderEditor(ticket, name) {
+    title.textContent = name || "Jauns spots";
+    back.hidden = false;
+    if (tg && tg.BackButton) tg.BackButton.show();
+    const [list] = await Promise.all([api("api/spots"), loadLeaflet()]);
+    if (ticket !== state.ticket) return;
+    const spot = name ? list.spots.find((s) => s.name === name) : null;
+    if (name && !spot) { view.innerHTML = '<p class="msg">Šāda spota nav.</p>'; return; }
+    if (!state.edit || state.edit.key !== (name || "")) {
+      state.edit = spot
+        ? { ...spot, sectors: spot.sectors.map((s) => [...s]), original: spot.name, key: name, dirty: false }
+        : { name: "", lat: null, lon: null, min_wind: 6, max_wind: 20, sectors: [], cell: "sea", original: null, key: "", dirty: false };
+      state.moving = false;
+    }
+    if (!list.is_admin && !spot) { view.innerHTML = '<p class="msg">Spotus pievienot var tikai admini.</p>'; return; }
+    view.innerHTML = '<div id="map" class="map"></div><div id="spot-form"></div>';
+    const L = window.L;
+    const e = state.edit;
+    const home = list.spots[0];
+    const center = e.lat !== null ? [e.lat, e.lon] : home ? [home.lat, home.lon] : [57.0, 24.0];
+    state.map = L.map("map").setView(center, e.lat !== null ? 13 : 9);
+    state.marker = null;
+    L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 18, attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    }).addTo(state.map);
+    list.spots.filter((s) => s.name !== e.original).forEach((s) => {
+      L.circleMarker([s.lat, s.lon], { radius: 6, color: "#10202E", weight: 2, fillColor: "#9CC9DE", fillOpacity: 1 })
+        .bindTooltip(s.name).addTo(state.map);
+    });
+    if (list.is_admin) {
+      state.map.on("click", (ev) => {
+        if (e.lat !== null && !state.moving) return;
+        e.lat = Number(ev.latlng.lat.toFixed(5));
+        e.lon = Number(ev.latlng.lng.toFixed(5));
+        e.dirty = true;
+        state.moving = false;
+        drawEditor(true, list.unit);
+      });
+    }
+    state.editUnit = list.unit;
+    state.editAdmin = list.is_admin;
+    drawEditor(list.is_admin, list.unit);
+  }
+
+  async function editorAction(name) {
+    const e = state.edit;
+    if (!e) return;
+    const stepWind = (key, delta) => {
+      e[key] = Math.max(0.5, Math.min(60, e[key] + delta));
+      e.dirty = true;
+    };
+    if (name === "min-dec") stepWind("min_wind", -0.5);
+    else if (name === "min-inc") stepWind("min_wind", 0.5);
+    else if (name === "max-dec") stepWind("max_wind", -0.5);
+    else if (name === "max-inc") stepWind("max_wind", 0.5);
+    else if (name === "spot-move") state.moving = !state.moving;
+    else if (name === "spot-save") {
+      try {
+        await api("api/spots/save", {
+          original: e.original, name: e.name.trim(), lat: e.lat, lon: e.lon,
+          min_wind: e.min_wind, max_wind: e.max_wind, sectors: e.sectors, cell: e.cell,
+        });
+        state.cache = {};
+        const saved = e.name.trim();
+        state.edit = null;
+        notify("Spots saglabāts.", true);
+        location.hash = `#/spot/${encodeURIComponent(saved)}`;
+      } catch (err) { notify(err.message, false); }
+      return;
+    } else if (name === "spot-delete") {
+      const go = async () => {
+        try {
+          await api("api/spots/delete", { name: e.original });
+          state.cache = {};
+          state.edit = null;
+          location.hash = "#/";
+        } catch (err) { notify(err.message, false); }
+      };
+      const question = `Dzēst spotu „${e.original}”?`;
+      if (tg && tg.showConfirm && tg.isVersionAtLeast && tg.isVersionAtLeast("6.2")) {
+        tg.showConfirm(question, (ok) => { if (ok) go(); });
+      } else if (window.confirm(question)) go();
+      return;
+    }
+    drawEditor(state.editAdmin, state.editUnit);
+  }
+
   // --- navigation ----------------------------------------------------------------
 
   function currentPage() {
@@ -423,6 +787,9 @@
     if (hash.startsWith("#/spot/")) return { page: "spot", name: decodeURIComponent(hash.slice(7)) };
     if (hash === "#/route") return { page: "route" };
     if (hash === "#/profile") return { page: "profile" };
+    if (hash === "#/riders") return { page: "riders" };
+    if (hash === "#/edit") return { page: "edit", name: null };
+    if (hash.startsWith("#/edit/")) return { page: "edit", name: decodeURIComponent(hash.slice(7)) };
     return { page: "forecast" };
   }
 
@@ -433,16 +800,22 @@
     }
     const ticket = ++state.ticket;
     const { page, name } = currentPage();
-    tabs.forEach((a) => a.classList.toggle("on", a.dataset.tab === (page === "spot" ? "forecast" : page)));
-    if (page !== "spot") {
+    const tab = page === "spot" || page === "edit" ? "forecast" : page;
+    tabs.forEach((a) => a.classList.toggle("on", a.dataset.tab === tab));
+    if (page !== "spot" && page !== "edit") {
       back.hidden = true;
       if (tg && tg.BackButton) tg.BackButton.hide();
     }
-    const cached = page === "profile" ? state.profile : page === "route" ? null : state.cache[state.day];
+    if (state.map) { state.map.remove(); state.map = null; state.marker = null; }
+    if (page !== "edit") state.edit = null;
+    const cached = { profile: state.profile, riders: state.riders, route: null, edit: null }[page]
+      ?? state.cache[state.day];
     if (!cached) view.innerHTML = '<p class="msg">Ielādē…</p>';
     try {
       if (page === "route") { await renderRoute(ticket); return; }
       if (page === "profile") { await renderProfile(ticket); return; }
+      if (page === "riders") { await renderRiders(ticket); return; }
+      if (page === "edit") { await renderEditor(ticket, name); return; }
       const data = await load(state.day);
       if (ticket !== state.ticket) return;  // a newer tap already took over
       if (page === "spot") renderSpot(data, name);
@@ -455,14 +828,29 @@
   view.addEventListener("click", (event) => {
     const option = event.target.closest("[data-seg] button");
     if (option) {
-      setSeg(option.parentElement.dataset.seg, option.dataset.val);
-      render();
+      const segName = option.parentElement.dataset.seg;
+      setSeg(segName, option.dataset.val);
+      if (segName === "cell") drawEditor(state.editAdmin, state.editUnit);  // keep the map
+      else render();
       return;
     }
     const action = event.target.closest("[data-act]");
     if (!action) return;
-    if (action.dataset.act === "share") shareRoute(action);
-    else profileAction(action.dataset.act, action);
+    const act = action.dataset.act;
+    if (act === "share") shareRoute(action);
+    else if (act === "rider-toggle") {
+      const who = action.dataset.name;
+      if (state.hidden.has(who)) state.hidden.delete(who); else state.hidden.add(who);
+      render();
+    } else if (/^(min|max)-(dec|inc)$|^spot-/.test(act)) editorAction(act);
+    else profileAction(act, action);
+  });
+  view.addEventListener("input", (event) => {
+    if (event.target.id !== "sp-name" || !state.edit) return;
+    state.edit.name = event.target.value;
+    state.edit.dirty = true;
+    const save = view.querySelector('[data-act="spot-save"]');
+    if (save) save.disabled = !(state.edit.name.trim() && state.edit.lat !== null);
   });
   view.addEventListener("change", (event) => {
     const id = event.target.id;
@@ -480,7 +868,12 @@
     const scheme = () => { document.documentElement.dataset.scheme = tg.colorScheme || "light"; };
     scheme();
     tg.onEvent("themeChanged", scheme);
-    if (tg.BackButton) tg.BackButton.onClick(() => { location.hash = "#/"; });
+    if (tg.BackButton) {
+      tg.BackButton.onClick(() => {
+        if (history.length > 1) history.back();
+        else location.hash = "#/";
+      });
+    }
     // t.me/<bot>/<app>?startapp=d1 opens on tomorrow, d2 the day after
     const start = tg.initDataUnsafe && tg.initDataUnsafe.start_param;
     const match = start && /^d(\d)$/.exec(start);

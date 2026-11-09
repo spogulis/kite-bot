@@ -30,6 +30,7 @@ RIDERS_FILE = DATA_DIR / "riders.json"
 USERS_FILE = DATA_DIR / "users.json"
 FORECAST_LOG_FILE = DATA_DIR / "forecast_log.json"
 FORECAST_LOG_DAYS = 7
+SESSIONS_FILE = DATA_DIR / "sessions.json"
 
 # Wind units supported by Open-Meteo's wind_speed_unit parameter.
 UNIT_LABELS = {"kn": "kn", "ms": "m/s", "kmh": "km/h", "mph": "mph"}
@@ -184,6 +185,7 @@ class Settings:
     surfr_token: str = ""  # empty = use the built-in public leaderboard token
     default_model: str = "best_match"  # weather model unless a spot overrides it
     default_cell: str = "land"  # forecast grid cell for newly added spots: land|sea|nearest
+    digest_map: bool = False  # morning digest as a map picture (text kept in its caption)
     # Telegram Mini App (see README "Mini App"). Port 0 keeps the web server off.
     webapp_port: int = 0
     webapp_host: str = "0.0.0.0"
@@ -217,7 +219,7 @@ def load_settings() -> Settings:
     raw: dict = {}
     if CONFIG_FILE.exists():
         try:
-            raw = yaml.safe_load(CONFIG_FILE.read_text()) or {}
+            raw = yaml.safe_load(CONFIG_FILE.read_text(encoding="utf-8")) or {}
         except yaml.YAMLError as exc:
             raise SystemExit(f"Could not parse {CONFIG_FILE}: {exc}") from exc
     if not isinstance(raw, dict):
@@ -246,6 +248,7 @@ def load_settings() -> Settings:
     if s.default_cell not in ("land", "sea", "nearest"):
         raise SystemExit(f"config.yaml default_cell must be land, sea or nearest, "
                          f"got {s.default_cell!r}")
+    s.digest_map = bool(raw.get("digest_map", s.digest_map))
     _parse_webapp(raw, s)
     return s
 
@@ -267,7 +270,7 @@ def load_spots(settings: "Settings | None" = None) -> list:
         save_spots(spots)
         log.info("created %s with example spots", SPOTS_FILE)
         return spots
-    raw = yaml.safe_load(SPOTS_FILE.read_text()) or []
+    raw = yaml.safe_load(SPOTS_FILE.read_text(encoding="utf-8")) or []
     if not isinstance(raw, list):
         raise SystemExit(f"{SPOTS_FILE} must contain a list of spots")
     return [Spot.from_dict(item, settings.wind_unit) for item in raw]
@@ -276,7 +279,7 @@ def load_spots(settings: "Settings | None" = None) -> list:
 def save_spots(spots: list) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     body = yaml.safe_dump([s.to_dict() for s in spots], sort_keys=False, allow_unicode=True)
-    SPOTS_FILE.write_text(SPOTS_HEADER + body)
+    SPOTS_FILE.write_text(SPOTS_HEADER + body, encoding="utf-8")
 
 
 @dataclass(frozen=True)
@@ -294,7 +297,7 @@ def load_subscriptions() -> list:
     if not SUBSCRIPTIONS_FILE.exists():
         return []
     try:
-        raw = json.loads(SUBSCRIPTIONS_FILE.read_text())
+        raw = json.loads(SUBSCRIPTIONS_FILE.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         log.warning("could not parse %s, treating as empty", SUBSCRIPTIONS_FILE)
         return []
@@ -321,7 +324,7 @@ def _save_subscriptions(subs: list) -> None:
     payload = {"subscriptions": [
         {"chat_id": s.chat_id, "thread_id": s.thread_id, "spots": list(s.spots)} for s in unique
     ]}
-    SUBSCRIPTIONS_FILE.write_text(json.dumps(payload, indent=2))
+    SUBSCRIPTIONS_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
 def find_subscription(chat_id: int, thread_id) -> "Subscription | None":
@@ -383,7 +386,7 @@ def load_riders() -> list:
     if not RIDERS_FILE.exists():
         return []
     try:
-        raw = json.loads(RIDERS_FILE.read_text())
+        raw = json.loads(RIDERS_FILE.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         log.warning("could not parse %s, treating as empty", RIDERS_FILE)
         return []
@@ -412,7 +415,7 @@ def save_riders(riders: list) -> None:
             continue
         seen |= keys
         unique.append(r)
-    RIDERS_FILE.write_text(json.dumps({"riders": unique}, indent=2, ensure_ascii=False))
+    RIDERS_FILE.write_text(json.dumps({"riders": unique}, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def add_rider(provider: str, rider_id: str, name: str, record_height_m: float) -> bool:
@@ -469,7 +472,7 @@ def load_forecast_log() -> dict:
     if not FORECAST_LOG_FILE.exists():
         return {}
     try:
-        raw = json.loads(FORECAST_LOG_FILE.read_text())
+        raw = json.loads(FORECAST_LOG_FILE.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         log.warning("could not parse %s, treating as empty", FORECAST_LOG_FILE)
         return {}
@@ -482,7 +485,28 @@ def record_forecast(date_iso: str, had_window: dict) -> None:
     days[date_iso] = {str(name): bool(value) for name, value in had_window.items()}
     kept = dict(sorted(days.items())[-FORECAST_LOG_DAYS:])
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    FORECAST_LOG_FILE.write_text(json.dumps(kept, indent=2))
+    FORECAST_LOG_FILE.write_text(json.dumps(kept, indent=2), encoding="utf-8")
+
+
+def load_sessions() -> dict:
+    """{iso_date: [session entry, …]} — every morning's rider recap, kept for
+    the Mini App's progress chart (riders.json only holds each best jump)."""
+    if not SESSIONS_FILE.exists():
+        return {}
+    try:
+        raw = json.loads(SESSIONS_FILE.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        log.warning("could not parse %s, treating as empty", SESSIONS_FILE)
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def record_sessions(date_iso: str, entries: list) -> None:
+    days = load_sessions()
+    days[date_iso] = entries
+    SESSIONS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    SESSIONS_FILE.write_text(json.dumps(dict(sorted(days.items())), indent=1, ensure_ascii=False),
+                             encoding="utf-8")
 
 
 def to_knots(value: float, unit: str) -> float:
@@ -494,7 +518,7 @@ def _load_profiles() -> dict:
     if not USERS_FILE.exists():
         return {}
     try:
-        return json.loads(USERS_FILE.read_text())
+        return json.loads(USERS_FILE.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         log.warning("could not parse %s, treating as empty", USERS_FILE)
         return {}
@@ -510,7 +534,7 @@ def update_profile(user_id: int, **fields) -> dict:
     profile = profiles.setdefault(str(user_id), {})
     profile.update(fields)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    USERS_FILE.write_text(json.dumps(profiles, indent=2, ensure_ascii=False))
+    USERS_FILE.write_text(json.dumps(profiles, indent=2, ensure_ascii=False), encoding="utf-8")
     return profile
 
 

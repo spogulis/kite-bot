@@ -316,3 +316,28 @@ def summarize(riders: list, stats: dict, known_spots=()) -> tuple:
         updated.append(entry)
     ranked.sort(key=lambda pair: -pair[0])  # stable, so ties keep config order
     return [line for _, line in ranked], updated, changed
+
+
+def session_entries(riders: list, stats: dict, known_spots=()) -> list:
+    """One record per rider who rode, for the session log behind the Mini App's
+    progress chart: the day's best jump height and jump distance, the distance
+    ridden in km, and the kite and spot of the best jump (None where no app
+    reported it)."""
+    def tenth(value: float) -> "float | None":
+        return round(value, 1) or None
+
+    entries = []
+    for rider in riders:
+        sources = _sources(rider, stats)
+        if not sources:
+            continue
+        kite = next((d["kite"] for d in _best_jump_first(sources) if d.get("kite")), "")
+        entries.append({
+            "name": str(rider.get("name") or "?"),
+            "height_m": tenth(max((d.get("height_m") or 0) for d in sources.values())),
+            "jump_distance_m": tenth(max((d.get("jump_distance_m") or 0) for d in sources.values())),
+            "distance_km": tenth(max((d.get("distance_m") or 0) for d in sources.values()) / 1000),
+            "kite": kite or None,
+            "spot": _spot_label(sources, known_spots) or None,
+        })
+    return entries
